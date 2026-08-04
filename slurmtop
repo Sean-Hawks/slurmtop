@@ -16,7 +16,13 @@ Slurm automatically; remote nodes are read over SSH.
 
 Requires only Python 3.8+, nvidia-smi on the nodes, and passwordless SSH to
 any remote node. Slurm is optional - without it, pass --nodes.
+
+credited by team-03/Hawks - HiPAC 2026, NCHC
+https://github.com/Sean-Hawks/slurmtop
 """
+
+__version__ = "1.0.0"
+__credits__ = "team-03/Hawks"
 
 import argparse
 import os
@@ -446,7 +452,9 @@ def render(nodes, show_proc=False, force_stack=False):
     # 剩下的高度留給佇列：總高 - 已用 - Slurm 區塊固定開銷(6) - 頁尾(1) - 保險(1)
     budget = lines - len(out) - 8
     out += slurm_section(total_w, max_jobs=max(1, budget))
-    out.append(dim("  " + T("footer")))
+    footer = "  " + T("footer")
+    sign = dim(f"team-03/Hawks · v{__version__}")
+    out.append(pad(dim(footer), max(0, total_w - vlen(sign))) + sign)
     return "\n".join(out)
 
 
@@ -461,7 +469,8 @@ def cluster_name():
 
 def main():
     ap = argparse.ArgumentParser(
-        description="One-screen dashboard for small GPU clusters (Slurm + nvidia-smi).")
+        description="One-screen dashboard for small GPU clusters (Slurm + nvidia-smi).",
+        epilog="credited by team-03/Hawks · https://github.com/Sean-Hawks/slurmtop")
     ap.add_argument("-n", "--interval", type=float, default=2.0,
                     help="refresh interval in seconds (default: 2)")
     ap.add_argument("--once", action="store_true", help="print one frame and exit")
@@ -471,6 +480,8 @@ def main():
     ap.add_argument("--stack", action="store_true", help="force vertical layout")
     ap.add_argument("--no-color", action="store_true", help="disable colour")
     ap.add_argument("--lang", choices=sorted(STRINGS), help="ui language (default: auto)")
+    ap.add_argument("-V", "--version", action="version",
+                    version=f"slurmtop {__version__} - credited by {__credits__}")
     args = ap.parse_args()
 
     global _color, _lang, _title
