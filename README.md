@@ -107,11 +107,17 @@ rest are read over SSH, one round trip each per refresh.
 | `2h45m`, `20m00s`, `3d02h` | durations, always with units |
 | header line | cluster totals: mean GPU utilisation, busy GPU count, VRAM, power draw, hottest GPU |
 
-The layout adapts to the terminal in both directions. Sparklines need ≥118
-columns; panels are placed side by side as long as they fit. If the window is
-too short, slurmtop drops the sparklines first, then collapses the per-GPU
-rows into one summary line per node, and finally trims the job list — so the
-frame always fits and never scrolls.
+The layout adapts to the terminal in both directions, and it treats the queue
+as the thing you most want to see in full. When everything does not fit, it
+gives up detail in this order:
+
+1. sparklines
+2. per-GPU rows, collapsed into one summary line per node
+3. the job list splits into two, then three columns
+4. only then are jobs trimmed, with a `N more job(s) hidden` note
+
+So a busy queue of ~30 jobs still shows in full on a normal window, and the
+frame never scrolls.
 
 If bars and sparklines show up as blank boxes or oddly wide blocks, your font
 lacks the Unicode block glyphs. Use `--ascii`:

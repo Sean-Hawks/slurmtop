@@ -129,6 +129,25 @@ def pad(s, width):
     return s + " " * max(0, width - vlen(s))
 
 
+def clip(s, width):
+    """裁到指定可見寬度，ANSI 顏色碼不計入寬度、也不會被切斷。"""
+    if vlen(s) <= width:
+        return s
+    out, w, i = [], 0, 0
+    while i < len(s) and w < width:
+        if s[i] == "\033":                          # 整段顏色碼原樣保留
+            j = s.find("m", i)
+            if j == -1:
+                break
+            out.append(s[i:j + 1]); i = j + 1
+            continue
+        cw = 2 if unicodedata_wide(s[i]) else 1
+        if w + cw > width:
+            break
+        out.append(s[i]); w += cw; i += 1
+    return "".join(out) + "\033[0m"
+
+
 def gradbar(pct, width=14):
     """漸層長條：每一格依自身位置著色，填滿的部分才亮。"""
     pct = max(0.0, min(100.0, pct))
@@ -387,11 +406,39 @@ def cluster_header(snaps, width):
             f"{spark(_hist[('all', 'gpu')], 10)}  {bold(str(busy))}/{len(gpus)} {T('gpus')} {dim('·')} "
             f"{vram_u:.0f}/{vram_t:.0f}G {dim('·')} {mag('%.2f kW' % (power / 1000))} "
             f"{dim('·')} {tmax}°C")
-    clock = dim(time.strftime("%H:%M:%S"))
+    clock = dim(" " + time.strftime("%H:%M:%S"))
     return [pad(left, max(0, width - vlen(clock))) + clock]
 
 
-def slurm_section(width, max_jobs=99):
+def job_cell(f, narrow):
+    """一個 job 的一列字串。narrow 用在多欄排版。"""
+    jid, name, st, elapsed, left, nodes, cpus, gres, where = f[:9]
+    if st == "R":
+        badge = rgb(46, 204, 113, "● " + T("run"))
+    elif st == "PD":
+        badge = rgb(241, 196, 15, "◐ " + T("pend"))
+    else:
+        badge = grey(f"○ {st}")
+    gpu = gres.replace("gres:gpu:", "").replace("N/A", "-")
+    if narrow:
+        return (f" {bold('%7s' % jid[:7])} {name[:10]:<10} {pad(badge, 7)} "
+                f"{pad(fmt_dur(elapsed), 8)} {gpu:>3} {cyan(where[:9])}")
+    return (f"  {bold('%7s' % jid[:7])}  {name[:11]:<11} {pad(badge, 7)} "
+            f"{pad(fmt_dur(elapsed), 9)} {pad(fmt_dur(left), 9)} "
+            f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:22])}")
+
+
+def job_header(narrow):
+    if narrow:
+        return (f" {T('job'):>7} {T('name'):<10} {pad(T('state'), 7)} "
+                f"{pad(T('used'), 8)} {T('gpu'):>3} {T('where')}")
+    return (f"  {T('job'):>7}  {T('name'):<11} {pad(T('state'), 7)} "
+            f"{pad(T('used'), 9)} {pad(T('left'), 9)} "
+            f"{T('nd'):>2} {T('cpu'):>4} {T('gpu'):>4}  {T('where')}")
+
+
+def slurm_section(width, max_rows=99, job_cols=1):
+    """回傳 (畫面行, 沒顯示到的 job 數)。job_cols>1 時佇列會排成多欄。"""
     inner = width - 2
     rows = []
     title = f" {bold(T('queue'))} "
@@ -400,32 +447,24 @@ def slurm_section(width, max_jobs=99):
     def line(c):
         rows.append(V + pad(c, inner) + V)
 
+    hidden = 0
     raw = sh('squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R"').strip()
     if not raw:
         line(dim("  " + T("no_jobs")))
     else:
-        rows_all = raw.splitlines()
-        hidden = max(0, len(rows_all) - max_jobs)
-        rows_all = rows_all[:max_jobs]
-        line(dim(f"  {T('job'):>5}  {T('name'):<11} {pad(T('state'), 6)} "
-                 f"{pad(T('used'), 9)} {pad(T('left'), 9)} "
-                 f"{T('nd'):>2} {T('cpu'):>4} {T('gpu'):>4}  {T('where')}"))
-        for ln in rows_all:
-            f = ln.split("|")
-            if len(f) < 9:
-                continue
-            jid, name, st, elapsed, left, nodes, cpus, gres, where = f[:9]
-            if st == "R":
-                badge = rgb(46, 204, 113, "● " + T("run"))
-            elif st == "PD":
-                badge = rgb(241, 196, 15, "◐ " + T("pend"))
-            else:
-                badge = grey(f"○ {st}")
-            gpu = gres.replace("gres:gpu:", "").replace("N/A", "-")
-            line(f"  {bold('%5s' % jid)}  {name[:11]:<11} {pad(badge, 7)} "
-                 f"{pad(fmt_dur(elapsed), 9)} {pad(fmt_dur(left), 9)} "
-                 f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:22])}")
+        parsed = [ln.split("|") for ln in raw.splitlines()]
+        parsed = [f for f in parsed if len(f) >= 9]
+        narrow = job_cols > 1
+        colw = inner // job_cols
 
+        line(dim("".join(pad(clip(job_header(narrow), colw - 1), colw)
+                             for _ in range(job_cols))))
+        cap = max(job_cols, max_rows * job_cols)
+        hidden = max(0, len(parsed) - cap)
+        cells = [job_cell(f, narrow) for f in parsed[:cap]]
+        for i in range(0, len(cells), job_cols):
+            group = cells[i:i + job_cols]
+            line("".join(pad(clip(c, colw - 1), colw) for c in group))
         if hidden:
             line(dim("  " + T("hidden") % hidden))
 
@@ -446,24 +485,30 @@ def slurm_section(width, max_jobs=99):
                  f"{dim(T('idle') + ' ' + idle)}   "
                  f"{dim('RAM ' + T('free') + ' %.0f GiB' % free_gib)}")
     rows.append(BL + H * inner + BR)
-    return rows
+    return rows, hidden
 
 
 def render(nodes, show_proc=False, force_stack=False):
     size = shutil.get_terminal_size((120, 45))
     cols, lines = size.columns, size.lines
     sparks = cols >= 118
-
     snaps = [snapshot(n) for n in nodes]
-    for level in (0, 1, 2):
-        frame = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
-                       sparks and level == 0, compact=level >= 2)
-        if len(frame) <= lines:
+
+    # 佇列優先：依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄，
+    # 直到所有 job 都顯示得出來為止。最後一種組合是保底。
+    plans = [(sparks, False, 1), (False, False, 1), (False, True, 1),
+             (False, True, 2), (False, True, 3)]
+    for i, (sp, compact, jcols) in enumerate(plans):
+        if jcols > 1 and cols < 46 * jcols:
+            continue
+        frame, hidden = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
+                               sp, compact, jcols)
+        if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
 
 
-def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact):
+def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact, job_cols=1):
     panel_w = 58 if sparks else 49
     panels = [node_panel(n, d, panel_w, show_proc, sparks, compact)
               for n, d in zip(nodes, snaps)]
@@ -482,14 +527,15 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact):
 
     # 剩下的高度留給佇列：總高 - 已用 - Slurm 區塊固定開銷(6) - 頁尾(1) - 保險(1)
     budget = lines - len(out) - 8
-    out += slurm_section(total_w, max_jobs=max(1, budget))
+    sec, hidden = slurm_section(total_w, max_rows=max(1, budget), job_cols=job_cols)
+    out += sec
     footer = "  " + T("footer")
     sign = dim(f"team-03/Hawks · v{__version__}")
     if vlen(footer) + vlen(sign) + 2 <= total_w:          # 擠不下就只留署名
         out.append(pad(dim(footer), total_w - vlen(sign)) + sign)
     else:
         out.append(pad("", max(0, total_w - vlen(sign))) + sign)
-    return out
+    return out, hidden
 
 
 def cluster_name():
