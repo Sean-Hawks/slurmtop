@@ -39,6 +39,15 @@ HIST = 24  # sparkline 保留幾筆歷史
 
 ANSI = re.compile(r"\033\[[0-9;?]*[a-zA-Z]")
 SPARK = "▁▂▃▄▅▆▇█"
+SPARK_ASCII = "._-~=+*#"
+_ascii = False
+
+
+def glyphs():
+    """(sparkline chars, bar filled, bar empty, left cap, right cap)"""
+    if _ascii:
+        return SPARK_ASCII, "#", ".", "[", "]"
+    return SPARK, "█", "░", "▕", "▏"
 
 # 面板線條
 TL, TR, BL, BR, H, V = "╭", "╮", "╰", "╯", "─", "│"
@@ -124,27 +133,30 @@ def gradbar(pct, width=14):
     """漸層長條：每一格依自身位置著色，填滿的部分才亮。"""
     pct = max(0.0, min(100.0, pct))
     filled = int(round(pct / 100 * width))
+    _, full, empty, lcap, rcap = glyphs()
     out = []
     for i in range(width):
         if i < filled:
             r, g, b = heat((i + 1) / width * 100)
-            out.append(rgb(r, g, b, "█"))
+            out.append(rgb(r, g, b, full))
         else:
-            out.append(grey("░"))
-    return "▕" + "".join(out) + "▏"
+            out.append(grey(empty))
+    return lcap + "".join(out) + rcap
 
 
 def spark(vals, width=8):
     """歷史走勢圖（0-100 的數列）。"""
+    chars = glyphs()[0]
     if not vals:
-        return grey("·" * width)
+        return grey(("." if _ascii else "·") * width)
     v = list(vals)[-width:]
     v = [0.0] * (width - len(v)) + v
     out = []
     for x in v:
-        idx = min(len(SPARK) - 1, int(max(0.0, min(100.0, x)) / 100 * (len(SPARK) - 1) + 0.5))
+        idx = min(len(chars) - 1,
+                  int(max(0.0, min(100.0, x)) / 100 * (len(chars) - 1) + 0.5))
         r, g, b = heat(x)
-        out.append(rgb(r, g, b, SPARK[idx]))
+        out.append(rgb(r, g, b, chars[idx]))
     return "".join(out)
 
 
@@ -288,7 +300,7 @@ def snapshot(node):
     return d
 
 
-def node_panel(node, d, width, show_proc, sparks):
+def node_panel(node, d, width, show_proc, sparks, compact=False):
     """回傳一台節點的面板行（已含邊框，每行寬度 = width）。"""
     inner = width - 2
     rows = []
@@ -329,10 +341,19 @@ def node_panel(node, d, width, show_proc, sparks):
          f"{dim(f'load {ld[0]:.0f} {ld[1]:.0f} {ld[2]:.0f}')}")
     mem_txt = "%.0f/%.0f GiB" % (d["mem_used"] / 1024, d["mem_total"] / 1024)
     line(f" {bold('RAM')} {gradbar(mem_pct)} {mem_pct:5.1f}%   {dim(mem_txt)}")
+    for g in d["gpus"]:                      # 歷史一定要更新，即使沒畫出來
+        _hist[(node, f"g{g[0]}")].append(float(g[1]))
+
+    if compact:
+        line(f" {bold('GPU')} {gradbar(avg_util)} {avg_util:5.1f}% "
+             f"{dim('%d/%d %s' % (busy, len(d['gpus']), T('busy')))} "
+             f"{dim('%.0f/%.0fG' % (vram_u, vram_t))}")
+        rows.append(BL + H * inner + BR)
+        return rows
+
     for g in d["gpus"]:
         idx, util = g[0], float(g[1])
         mu, mt, temp, pw = float(g[2]), float(g[3]), int(float(g[4])), float(g[5])
-        _hist[(node, f"g{idx}")].append(util)
         tcol = heat(max(0, min(100, (temp - 35) / 50 * 100)))
         sp = (" " + spark(_hist[(node, f"g{idx}")], 8)) if sparks else ""
         line(f" {dim('GPU')}{bold(idx)} {gradbar(util, 12)} {util:3.0f}%{sp} "
@@ -432,10 +453,20 @@ def render(nodes, show_proc=False, force_stack=False):
     size = shutil.get_terminal_size((120, 45))
     cols, lines = size.columns, size.lines
     sparks = cols >= 118
-    panel_w = 58 if sparks else 49
 
     snaps = [snapshot(n) for n in nodes]
-    panels = [node_panel(n, d, panel_w, show_proc, sparks) for n, d in zip(nodes, snaps)]
+    for level in (0, 1, 2):
+        frame = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
+                       sparks and level == 0, compact=level >= 2)
+        if len(frame) <= lines:
+            break
+    return "\n".join(frame[:lines])
+
+
+def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact):
+    panel_w = 58 if sparks else 49
+    panels = [node_panel(n, d, panel_w, show_proc, sparks, compact)
+              for n, d in zip(nodes, snaps)]
 
     percol = max(1, cols // panel_w)
     if force_stack:
@@ -454,8 +485,11 @@ def render(nodes, show_proc=False, force_stack=False):
     out += slurm_section(total_w, max_jobs=max(1, budget))
     footer = "  " + T("footer")
     sign = dim(f"team-03/Hawks · v{__version__}")
-    out.append(pad(dim(footer), max(0, total_w - vlen(sign))) + sign)
-    return "\n".join(out)
+    if vlen(footer) + vlen(sign) + 2 <= total_w:          # 擠不下就只留署名
+        out.append(pad(dim(footer), total_w - vlen(sign)) + sign)
+    else:
+        out.append(pad("", max(0, total_w - vlen(sign))) + sign)
+    return out
 
 
 def cluster_name():
@@ -479,14 +513,17 @@ def main():
     ap.add_argument("--proc", action="store_true", help="list processes on each GPU")
     ap.add_argument("--stack", action="store_true", help="force vertical layout")
     ap.add_argument("--no-color", action="store_true", help="disable colour")
+    ap.add_argument("--ascii", action="store_true",
+                    help="ASCII bars/sparklines for fonts without block glyphs")
     ap.add_argument("--lang", choices=sorted(STRINGS), help="ui language (default: auto)")
     ap.add_argument("-V", "--version", action="version",
                     version=f"slurmtop {__version__} - credited by {__credits__}")
     args = ap.parse_args()
 
-    global _color, _lang, _title
+    global _color, _lang, _title, _ascii
     if args.no_color:
         _color = False
+    _ascii = args.ascii
     if args.lang:
         _lang = args.lang
     elif any(x in os.environ.get("LANG", "") for x in ("zh_TW", "zh_HK", "zh_CN")):
@@ -502,7 +539,9 @@ def main():
         print(render(nodes, args.proc, args.stack))
         return
     try:
-        print("\033[?25l", end="")
+        # 1049h = 切到備用畫面緩衝區，25l = 藏游標。
+        # 用備用緩衝區而不是狂清畫面，捲動時才不會把舊的畫面留在 scrollback。
+        sys.stdout.write("\033[?1049h\033[?25l")
         while True:
             sys.stdout.write("\033[H\033[J" + render(nodes, args.proc, args.stack))
             sys.stdout.flush()
@@ -510,7 +549,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        print("\033[?25h")
+        sys.stdout.write("\033[?25h\033[?1049l")
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

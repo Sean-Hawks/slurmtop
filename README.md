@@ -89,6 +89,7 @@ slurmtop --nodes a,b,c      # explicit node list, skip Slurm discovery
 slurmtop --proc             # also list the processes on each GPU
 slurmtop --stack            # force vertical layout
 slurmtop --no-color         # plain text
+slurmtop --ascii            # ASCII bars, for fonts without block glyphs
 slurmtop --lang zh          # 繁體中文介面（預設依 $LANG 自動判斷）
 slurmtop --title "lab-gpu"  # header title (default: Slurm ClusterName)
 ```
@@ -106,9 +107,23 @@ rest are read over SSH, one round trip each per refresh.
 | `2h45m`, `20m00s`, `3d02h` | durations, always with units |
 | header line | cluster totals: mean GPU utilisation, busy GPU count, VRAM, power draw, hottest GPU |
 
-The layout adapts to the terminal: sparklines need ≥118 columns, panels are
-placed side by side as long as they fit, and the job list is truncated to keep
-everything on one screen.
+The layout adapts to the terminal in both directions. Sparklines need ≥118
+columns; panels are placed side by side as long as they fit. If the window is
+too short, slurmtop drops the sparklines first, then collapses the per-GPU
+rows into one summary line per node, and finally trims the job list — so the
+frame always fits and never scrolls.
+
+If bars and sparklines show up as blank boxes or oddly wide blocks, your font
+lacks the Unicode block glyphs. Use `--ascii`:
+
+```
+hipac-team3  [#...............]   6.2% ..........  1/16 GPUs · 129/2246G · 2.16 kW · 49°C
+│ CPU [..............]   0.6% load 5 6 7        ││ GPU0 [############]  99% 128.6G 49°  502W  │
+```
+
+The live view runs in the terminal's alternate screen buffer, so quitting
+restores whatever was on screen before and leaves no stack of stale frames in
+your scrollback.
 
 ## Notes
 
