@@ -88,6 +88,7 @@ slurmtop --once             # print one frame and exit (good for chat/logs)
 slurmtop --nodes a,b,c      # explicit node list, skip Slurm discovery
 slurmtop --proc             # also list the processes on each GPU
 slurmtop --stack            # force vertical layout
+slurmtop --fit              # squeeze into one screen instead of showing everything
 slurmtop --no-color         # plain text
 slurmtop --ascii            # ASCII bars, for fonts without block glyphs
 slurmtop --lang zh          # 繁體中文介面（預設依 $LANG 自動判斷）
@@ -107,17 +108,17 @@ rest are read over SSH, one round trip each per refresh.
 | `2h45m`, `20m00s`, `3d02h` | durations, always with units |
 | header line | cluster totals: mean GPU utilisation, busy GPU count, VRAM, power draw, hottest GPU |
 
-The layout adapts to the terminal in both directions, and it treats the queue
-as the thing you most want to see in full. When everything does not fit, it
-gives up detail in this order:
+By default nothing is hidden: every GPU row and every queued job is printed,
+even if the result is taller than the window. If the queue is long, the job
+list splits into two or three columns to claw back some height, but jobs are
+never dropped.
 
-1. sparklines
-2. per-GPU rows, collapsed into one summary line per node
-3. the job list splits into two, then three columns
-4. only then are jobs trimmed, with a `N more job(s) hidden` note
+Panels sit side by side while they fit, and sparklines need ≥118 columns.
 
-So a busy queue of ~30 jobs still shows in full on a normal window, and the
-frame never scrolls.
+If you would rather have a single screen that never scrolls, use `--fit`. That
+mode gives up detail in order — sparklines, then per-GPU rows collapsed to one
+line per node, then multi-column jobs, and finally trimming the job list with
+a `N more job(s) hidden` note.
 
 If bars and sparklines show up as blank boxes or oddly wide blocks, your font
 lacks the Unicode block glyphs. Use `--ascii`:

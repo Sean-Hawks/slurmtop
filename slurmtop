@@ -422,7 +422,7 @@ def job_cell(f, narrow):
     gpu = gres.replace("gres:gpu:", "").replace("N/A", "-")
     if narrow:
         return (f" {bold('%7s' % jid[:7])} {name[:10]:<10} {pad(badge, 7)} "
-                f"{pad(fmt_dur(elapsed), 8)} {gpu:>3} {cyan(where[:9])}")
+                f"{pad(fmt_dur(elapsed), 8)} {gpu:>3} {cyan(where[:24])}")
     return (f"  {bold('%7s' % jid[:7])}  {name[:11]:<11} {pad(badge, 7)} "
             f"{pad(fmt_dur(elapsed), 9)} {pad(fmt_dur(left), 9)} "
             f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:22])}")
@@ -488,17 +488,28 @@ def slurm_section(width, max_rows=99, job_cols=1):
     return rows, hidden
 
 
-def render(nodes, show_proc=False, force_stack=False):
+def render(nodes, show_proc=False, force_stack=False, fit=False):
     size = shutil.get_terminal_size((120, 45))
     cols, lines = size.columns, size.lines
     sparks = cols >= 118
     snaps = [snapshot(n) for n in nodes]
 
-    # 佇列優先：依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄，
-    # 直到所有 job 都顯示得出來為止。最後一種組合是保底。
+    if not fit:
+        # 預設：每張卡的明細與整個佇列都完整顯示，畫面長一點沒關係。
+        # 佇列先用單欄；若這樣塞不進視窗，改多欄試著擠進去，但絕不收合或裁切。
+        for jcols in (1, 2, 3):
+            if jcols > 1 and cols < 46 * jcols:
+                break
+            frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
+                              sparks, compact=False, job_cols=jcols)
+            if len(frame) <= lines:
+                break
+        return "\n".join(frame)
+
+    # --fit：硬塞進一頁。依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄 -> 裁 job。
     plans = [(sparks, False, 1), (False, False, 1), (False, True, 1),
              (False, True, 2), (False, True, 3)]
-    for i, (sp, compact, jcols) in enumerate(plans):
+    for sp, compact, jcols in plans:
         if jcols > 1 and cols < 46 * jcols:
             continue
         frame, hidden = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
@@ -558,6 +569,8 @@ def main():
     ap.add_argument("--title", help="header title (default: Slurm ClusterName)")
     ap.add_argument("--proc", action="store_true", help="list processes on each GPU")
     ap.add_argument("--stack", action="store_true", help="force vertical layout")
+    ap.add_argument("--fit", action="store_true",
+                    help="squeeze everything into one screen (drops detail if needed)")
     ap.add_argument("--no-color", action="store_true", help="disable colour")
     ap.add_argument("--ascii", action="store_true",
                     help="ASCII bars/sparklines for fonts without block glyphs")
@@ -582,14 +595,14 @@ def main():
         sys.exit("no nodes found - pass --nodes host1,host2")
 
     if args.once:
-        print(render(nodes, args.proc, args.stack))
+        print(render(nodes, args.proc, args.stack, args.fit))
         return
     try:
         # 1049h = 切到備用畫面緩衝區，25l = 藏游標。
         # 用備用緩衝區而不是狂清畫面，捲動時才不會把舊的畫面留在 scrollback。
         sys.stdout.write("\033[?1049h\033[?25l")
         while True:
-            sys.stdout.write("\033[H\033[J" + render(nodes, args.proc, args.stack))
+            sys.stdout.write("\033[H\033[J" + render(nodes, args.proc, args.stack, args.fit))
             sys.stdout.flush()
             time.sleep(args.interval)
     except KeyboardInterrupt:
