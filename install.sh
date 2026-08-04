@@ -32,13 +32,15 @@ chmod +x "$TMP"
 
 echo "→ installing to $TARGET"
 mkdir -p "$DEST" 2>/dev/null || true
+# install(1) sets the mode explicitly - a plain cp would inherit mktemp's 0600
+# and leave the file unreadable for everyone but root.
 if [[ -w $DEST ]]; then
-  mv "$TMP" "$TARGET"
+  install -m 755 "$TMP" "$TARGET"
 else
   sudo mkdir -p "$DEST"
-  sudo cp "$TMP" "$TARGET"
-  sudo chmod +x "$TARGET"
+  sudo install -m 755 "$TMP" "$TARGET"
 fi
+rm -f "$TMP"
 trap - EXIT
 
 if ! command -v slurmtop >/dev/null; then
