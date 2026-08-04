@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""slurmtop - a one-screen dashboard for small GPU clusters.
+
+Shows CPU / RAM / per-GPU utilisation for every node plus the Slurm queue,
+with colour gradient bars and sparkline history. Nodes are discovered from
+Slurm automatically; remote nodes are read over SSH.
+
+    slurmtop                 # refresh every 2s
+    slurmtop -n 5            # refresh every 5s
+    slurmtop --once          # print once (handy for pasting into chat)
+    slurmtop --nodes a,b,c   # explicit node list instead of Slurm discovery
+    slurmtop --proc          # also list processes on each GPU
+    slurmtop --stack         # force vertical layout
+    slurmtop --no-color      # plain text
+    slurmtop --lang zh       # 繁體中文介面
+
+Requires only Python 3.8+, nvidia-smi on the nodes, and passwordless SSH to
+any remote node. Slurm is optional - without it, pass --nodes.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections import defaultdict, deque
+
+GPU_Q = "index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
+PROC_Q = "pid,used_gpu_memory,process_name"
+HIST = 24  # sparkline 保留幾筆歷史
+
+ANSI = re.compile(r"\033\[[0-9;?]*[a-zA-Z]")
+SPARK = "▁▂▃▄▅▆▇█"
+
+# 面板線條
+TL, TR, BL, BR, H, V = "╭", "╮", "╰", "╯", "─", "│"
+
+_color = True
+_lang = "en"
+_title = "cluster"
+
+STRINGS = {
+    "en": {
+        "busy": "busy", "queue": "Slurm queue", "no_jobs": "(no jobs)",
+        "job": "JOB", "name": "NAME", "state": "STATE", "used": "ELAPSED",
+        "left": "LEFT", "nd": "N", "cpu": "CPU", "gpu": "GPU", "where": "WHERE",
+        "run": "run", "pend": "pend", "idle": "idle", "free": "free",
+        "unreachable": "unreachable / nvidia-smi not responding",
+        "hidden": "%d more job(s) hidden - run squeue for the full list",
+        "footer": "Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval",
+        "gpus": "GPUs", "local": "local", "remote": "ssh",
+    },
+    "zh": {
+        "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
+        "job": "JOB", "name": "名稱", "state": "狀態", "used": "已跑",
+        "left": "剩餘", "nd": "節", "cpu": "CPU", "gpu": "GPU", "where": "位置",
+        "run": "執行", "pend": "排隊", "idle": "閒置", "free": "可用",
+        "unreachable": "連不上或 nvidia-smi 無回應",
+        "hidden": "…還有 %d 個 job 未顯示（用 squeue 看完整清單）",
+        "footer": "Ctrl-C 離開  ·  --proc 看行程  ·  --stack 上下排列  ·  -n <秒> 改間隔",
+        "gpus": "張", "local": "本機", "remote": "ssh",
+    },
+}
+
+
+def T(key):
+    return STRINGS[_lang][key]
+
+
+def rgb(r, g, b, s):
+    return f"\033[38;2;{r};{g};{b}m{s}\033[0m" if _color else s
+
+
+def sgr(code, s):
+    return f"\033[{code}m{s}\033[0m" if _color else s
+
+
+def bold(s):   return sgr("1", s)
+def dim(s):    return sgr("2", s)
+def grey(s):   return rgb(110, 118, 129, s)
+def cyan(s):   return rgb(86, 211, 240, s)
+def mag(s):    return rgb(199, 146, 234, s)
+
+
+def heat(pct):
+    """0% 綠 → 60% 黃 → 100% 紅 的漸層 RGB。"""
+    pct = max(0.0, min(100.0, pct))
+    if pct <= 60:
+        t = pct / 60
+        return (int(46 + (241 - 46) * t), int(204 + (196 - 204) * t), int(113 + (15 - 113) * t))
+    t = (pct - 60) / 40
+    return (int(241 + (231 - 241) * t), int(196 + (76 - 196) * t), int(15 + (60 - 15) * t))
+
+
+def vlen(s):
+    """扣掉 ANSI 顏色碼後的可見寬度（全形字算 2 格）。"""
+    plain = ANSI.sub("", s)
+    w = 0
+    for ch in plain:
+        w += 2 if unicodedata_wide(ch) else 1
+    return w
+
+
+def unicodedata_wide(ch):
+    o = ord(ch)
+    return (0x1100 <= o <= 0x115F or 0x2E80 <= o <= 0xA4CF or 0xAC00 <= o <= 0xD7A3
+            or 0xF900 <= o <= 0xFAFF or 0xFE30 <= o <= 0xFE6F or 0xFF00 <= o <= 0xFF60
+            or 0xFFE0 <= o <= 0xFFE6)
+
+
+def pad(s, width):
+    return s + " " * max(0, width - vlen(s))
+
+
+def gradbar(pct, width=14):
+    """漸層長條：每一格依自身位置著色，填滿的部分才亮。"""
+    pct = max(0.0, min(100.0, pct))
+    filled = int(round(pct / 100 * width))
+    out = []
+    for i in range(width):
+        if i < filled:
+            r, g, b = heat((i + 1) / width * 100)
+            out.append(rgb(r, g, b, "█"))
+        else:
+            out.append(grey("░"))
+    return "▕" + "".join(out) + "▏"
+
+
+def spark(vals, width=8):
+    """歷史走勢圖（0-100 的數列）。"""
+    if not vals:
+        return grey("·" * width)
+    v = list(vals)[-width:]
+    v = [0.0] * (width - len(v)) + v
+    out = []
+    for x in v:
+        idx = min(len(SPARK) - 1, int(max(0.0, min(100.0, x)) / 100 * (len(SPARK) - 1) + 0.5))
+        r, g, b = heat(x)
+        out.append(rgb(r, g, b, SPARK[idx]))
+    return "".join(out)
+
+
+def fmt_dur(t):
+    """Slurm 的 D-HH:MM:SS / HH:MM:SS / MM:SS 轉成好讀的形式。"""
+    t = (t or "").strip()
+    if t in ("", "N/A", "NOT_SET", "INVALID", "UNLIMITED"):
+        return "-" if t != "UNLIMITED" else "inf"
+    days = 0
+    if "-" in t:
+        d, _, t = t.partition("-")
+        days = int(d) if d.isdigit() else 0
+    parts = [int(x) for x in t.split(":") if x.isdigit()]
+    if len(parts) == 3:
+        h, m, sec = parts
+    elif len(parts) == 2:
+        h, m, sec = 0, parts[0], parts[1]
+    elif len(parts) == 1:
+        h, m, sec = 0, 0, parts[0]
+    else:
+        return t
+    h += days * 24
+    if h >= 24:
+        return f"{h // 24}d{h % 24:02d}h"
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{sec:02d}s"
+    return f"{sec}s"
+
+
+_hist = defaultdict(lambda: deque(maxlen=HIST))
+
+
+def sh(cmd, timeout=12):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout
+    except Exception:
+        return ""
+
+
+def discover_nodes():
+    """Node list from Slurm; falls back to the local host."""
+    out = sh('sinfo -h -N -o "%N"').split()
+    seen, nodes = set(), []
+    for n in out:
+        if n not in seen:
+            seen.add(n)
+            nodes.append(n)
+    return nodes or [local_host()]
+
+
+def node_hostnames():
+    """Slurm NodeName -> NodeHostName, so we can tell which node is local."""
+    m = {}
+    for line in sh('scontrol show node -o').splitlines():
+        name = re.search(r"NodeName=(\S+)", line)
+        host = re.search(r"NodeHostName=(\S+)", line)
+        if name:
+            m[name.group(1)] = host.group(1) if host else name.group(1)
+    return m
+
+
+_host = None
+
+
+def local_host():
+    global _host
+    if _host is None:
+        _host = sh("hostname -s").strip()
+    return _host
+
+
+_hostmap = None
+
+
+def is_local(node):
+    global _hostmap
+    if _hostmap is None:
+        _hostmap = node_hostnames()
+    h = local_host()
+    return node == h or _hostmap.get(node, node) == h
+
+
+REMOTE = f"""
+head -1 /proc/stat; sleep 0.25; head -1 /proc/stat
+echo '@@'
+cat /proc/loadavg; nproc
+echo '@@'
+free -m | awk '/^Mem:/{{print $2, $3}}'
+echo '@@'
+nvidia-smi --query-gpu={GPU_Q} --format=csv,noheader,nounits
+echo '@@'
+nvidia-smi --query-compute-apps={PROC_Q} --format=csv,noheader,nounits 2>/dev/null
+"""
+
+
+def run_script(node, script, timeout=20):
+    argv = ["bash", "-s"] if is_local(node) else \
+           ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", node, "bash", "-s"]
+    try:
+        r = subprocess.run(argv, input=script, capture_output=True, text=True, timeout=timeout)
+        return r.stdout
+    except Exception:
+        return ""
+
+
+def snapshot(node):
+    parts = [p.strip() for p in run_script(node, REMOTE).split("@@")]
+    if len(parts) < 4:            # 節點忙碌時 nvidia-smi 偶爾會慢到超時，重試一次
+        parts = [p.strip() for p in run_script(node, REMOTE).split("@@")]
+    if len(parts) < 4:
+        return None
+    d = {}
+    try:
+        a, b = [list(map(int, ln.split()[1:])) for ln in parts[0].splitlines()[:2]]
+        idle_d = (b[3] + b[4]) - (a[3] + a[4])
+        tot_d = sum(b) - sum(a)
+        d["cpu_pct"] = max(0.0, 100.0 * (tot_d - idle_d) / tot_d) if tot_d else 0.0
+    except Exception:
+        d["cpu_pct"] = 0.0
+    try:
+        lines = parts[1].splitlines()
+        d["load"] = [float(x) for x in lines[0].split()[:3]]
+        d["ncpu"] = int(lines[1])
+    except Exception:
+        d["load"], d["ncpu"] = [0, 0, 0], 0
+    try:
+        mt, mu = parts[2].split()
+        d["mem_total"], d["mem_used"] = int(mt), int(mu)
+    except Exception:
+        d["mem_total"] = d["mem_used"] = 0
+    d["gpus"] = [[x.strip() for x in ln.split(",")] for ln in parts[3].splitlines() if ln.strip()]
+    d["procs"] = []
+    if len(parts) > 4:
+        for ln in parts[4].splitlines():
+            f = [x.strip() for x in ln.split(",")]
+            if len(f) >= 3:
+                d["procs"].append(f)
+    return d
+
+
+def node_panel(node, d, width, show_proc, sparks):
+    """回傳一台節點的面板行（已含邊框，每行寬度 = width）。"""
+    inner = width - 2
+    rows = []
+
+    def line(content):
+        rows.append(V + pad(content, inner) + V)
+
+    if not d or not d["gpus"]:
+        title = f" {bold(node)} "
+        rows.append(TL + H * 2 + title + H * max(0, inner - vlen(title) - 2) + TR)
+        line("  " + rgb(231, 76, 60, T("unreachable")))
+        rows.append(BL + H * inner + BR)
+        return rows
+
+    utils = [float(g[1]) for g in d["gpus"]]
+    avg_util = sum(utils) / len(utils)
+    vram_u = sum(float(g[2]) for g in d["gpus"]) / 1024
+    vram_t = sum(float(g[3]) for g in d["gpus"]) / 1024
+    power = sum(float(g[5]) for g in d["gpus"])
+    busy = sum(1 for u in utils if u > 5)
+    tmax = max(int(float(g[4])) for g in d["gpus"])
+    mem_pct = d["mem_used"] / d["mem_total"] * 100 if d["mem_total"] else 0
+
+    _hist[(node, "cpu")].append(d["cpu_pct"])
+    _hist[(node, "gpu")].append(avg_util)
+
+    # 標題列
+    where = T("local") if is_local(node) else T("remote")
+    left = f" {bold(cyan(node))} {dim(where)} "
+    right = (f" {busy}/{len(d['gpus'])} {T('busy')} {dim('·')} {vram_u:.0f}G {dim('·')} "
+             f"{mag('%.1f kW' % (power / 1000))} {dim('·')} {tmax}°C ")
+    fill = max(0, inner - vlen(left) - vlen(right))
+    rows.append(TL + left + H * fill + right + TR)
+
+    sp = (" " + spark(_hist[(node, "cpu")], 8)) if sparks else ""
+    ld = d["load"]
+    line(f" {bold('CPU')} {gradbar(d['cpu_pct'])} {d['cpu_pct']:5.1f}%{sp} "
+         f"{dim(f'load {ld[0]:.0f} {ld[1]:.0f} {ld[2]:.0f}')}")
+    mem_txt = "%.0f/%.0f GiB" % (d["mem_used"] / 1024, d["mem_total"] / 1024)
+    line(f" {bold('RAM')} {gradbar(mem_pct)} {mem_pct:5.1f}%   {dim(mem_txt)}")
+    for g in d["gpus"]:
+        idx, util = g[0], float(g[1])
+        mu, mt, temp, pw = float(g[2]), float(g[3]), int(float(g[4])), float(g[5])
+        _hist[(node, f"g{idx}")].append(util)
+        tcol = heat(max(0, min(100, (temp - 35) / 50 * 100)))
+        sp = (" " + spark(_hist[(node, f"g{idx}")], 8)) if sparks else ""
+        line(f" {dim('GPU')}{bold(idx)} {gradbar(util, 12)} {util:3.0f}%{sp} "
+             f"{mu/1024:5.1f}G {rgb(*tcol, f'{temp:>2}°')} {dim(f'{pw:4.0f}W')}")
+
+    if show_proc and d["procs"]:
+        for pid, mem, name in d["procs"][:8]:
+            line(dim(f"   {pid:>8} {float(mem)/1024:5.1f}G {name.split('/')[-1][:18]}"))
+        if len(d["procs"]) > 8:
+            line(dim(f"   …還有 {len(d['procs']) - 8} 個"))
+
+    rows.append(BL + H * inner + BR)
+    return rows
+
+
+def cluster_header(snaps, width):
+    """最上面的叢集總覽列。"""
+    gpus = [g for d in snaps if d for g in d["gpus"]]
+    if not gpus:
+        return [rgb(231, 76, 60, "叢集無回應")]
+    utils = [float(g[1]) for g in gpus]
+    avg = sum(utils) / len(utils)
+    busy = sum(1 for u in utils if u > 5)
+    power = sum(float(g[5]) for g in gpus)
+    tmax = max(int(float(g[4])) for g in gpus)
+    vram_u = sum(float(g[2]) for g in gpus) / 1024
+    vram_t = sum(float(g[3]) for g in gpus) / 1024
+    _hist[("all", "gpu")].append(avg)
+
+    left = (f"{bold(_title)}  {gradbar(avg, 16)} {avg:5.1f}% "
+            f"{spark(_hist[('all', 'gpu')], 10)}  {bold(str(busy))}/{len(gpus)} {T('gpus')} {dim('·')} "
+            f"{vram_u:.0f}/{vram_t:.0f}G {dim('·')} {mag('%.2f kW' % (power / 1000))} "
+            f"{dim('·')} {tmax}°C")
+    clock = dim(time.strftime("%H:%M:%S"))
+    return [pad(left, max(0, width - vlen(clock))) + clock]
+
+
+def slurm_section(width, max_jobs=99):
+    inner = width - 2
+    rows = []
+    title = f" {bold(T('queue'))} "
+    rows.append(TL + title + H * max(0, inner - vlen(title)) + TR)
+
+    def line(c):
+        rows.append(V + pad(c, inner) + V)
+
+    raw = sh('squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R"').strip()
+    if not raw:
+        line(dim("  " + T("no_jobs")))
+    else:
+        rows_all = raw.splitlines()
+        hidden = max(0, len(rows_all) - max_jobs)
+        rows_all = rows_all[:max_jobs]
+        line(dim(f"  {T('job'):>5}  {T('name'):<11} {pad(T('state'), 6)} "
+                 f"{pad(T('used'), 9)} {pad(T('left'), 9)} "
+                 f"{T('nd'):>2} {T('cpu'):>4} {T('gpu'):>4}  {T('where')}"))
+        for ln in rows_all:
+            f = ln.split("|")
+            if len(f) < 9:
+                continue
+            jid, name, st, elapsed, left, nodes, cpus, gres, where = f[:9]
+            if st == "R":
+                badge = rgb(46, 204, 113, "● " + T("run"))
+            elif st == "PD":
+                badge = rgb(241, 196, 15, "◐ " + T("pend"))
+            else:
+                badge = grey(f"○ {st}")
+            gpu = gres.replace("gres:gpu:", "").replace("N/A", "-")
+            line(f"  {bold('%5s' % jid)}  {name[:11]:<11} {pad(badge, 7)} "
+                 f"{pad(fmt_dur(elapsed), 9)} {pad(fmt_dur(left), 9)} "
+                 f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:22])}")
+
+        if hidden:
+            line(dim("  " + T("hidden") % hidden))
+
+    info = sh('sinfo -h -N -o "%N|%T|%C|%e/%m"').strip()
+    if info:
+        line(dim(" " + "┈" * (inner - 2)))
+        seen = set()
+        for ln in info.splitlines():
+            n, state, c, m = (ln.split("|") + ["", "", "", ""])[:4]
+            if n in seen:      # sinfo -N 每個佇列列一次，同一台只顯示一行
+                continue
+            seen.add(n)
+            alloc, idle, other, total = (c.split("/") + ["0"] * 4)[:4]
+            free_mb = (m.split("/") + ["0"])[0]
+            free_gib = int(free_mb) / 1024 if free_mb.isdigit() else 0
+            pct = 100 * int(alloc) / int(total) if total.isdigit() and int(total) else 0
+            line(f"  {bold(n):<10} {state:<8} CPU {gradbar(pct, 10)} {alloc}/{total} "
+                 f"{dim(T('idle') + ' ' + idle)}   "
+                 f"{dim('RAM ' + T('free') + ' %.0f GiB' % free_gib)}")
+    rows.append(BL + H * inner + BR)
+    return rows
+
+
+def render(nodes, show_proc=False, force_stack=False):
+    size = shutil.get_terminal_size((120, 45))
+    cols, lines = size.columns, size.lines
+    sparks = cols >= 118
+    panel_w = 58 if sparks else 49
+
+    snaps = [snapshot(n) for n in nodes]
+    panels = [node_panel(n, d, panel_w, show_proc, sparks) for n, d in zip(nodes, snaps)]
+
+    percol = max(1, cols // panel_w)
+    if force_stack:
+        percol = 1
+    total_w = panel_w * min(percol, max(1, len(panels)))
+
+    out = cluster_header(snaps, total_w)
+    for start in range(0, len(panels), percol):
+        group = panels[start:start + percol]
+        h = max(len(p) for p in group)
+        for i in range(h):
+            out.append("".join(pad(p[i] if i < len(p) else "", panel_w) for p in group).rstrip())
+
+    # 剩下的高度留給佇列：總高 - 已用 - Slurm 區塊固定開銷(6) - 頁尾(1) - 保險(1)
+    budget = lines - len(out) - 8
+    out += slurm_section(total_w, max_jobs=max(1, budget))
+    out.append(dim("  " + T("footer")))
+    return "\n".join(out)
+
+
+def cluster_name():
+    for line in sh("scontrol show config").splitlines():
+        if line.startswith("ClusterName"):
+            v = line.split("=", 1)[1].strip()
+            if v and v != "(null)":
+                return v
+    return "cluster"
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="One-screen dashboard for small GPU clusters (Slurm + nvidia-smi).")
+    ap.add_argument("-n", "--interval", type=float, default=2.0,
+                    help="refresh interval in seconds (default: 2)")
+    ap.add_argument("--once", action="store_true", help="print one frame and exit")
+    ap.add_argument("--nodes", help="comma-separated node list (default: discover from Slurm)")
+    ap.add_argument("--title", help="header title (default: Slurm ClusterName)")
+    ap.add_argument("--proc", action="store_true", help="list processes on each GPU")
+    ap.add_argument("--stack", action="store_true", help="force vertical layout")
+    ap.add_argument("--no-color", action="store_true", help="disable colour")
+    ap.add_argument("--lang", choices=sorted(STRINGS), help="ui language (default: auto)")
+    args = ap.parse_args()
+
+    global _color, _lang, _title
+    if args.no_color:
+        _color = False
+    if args.lang:
+        _lang = args.lang
+    elif any(x in os.environ.get("LANG", "") for x in ("zh_TW", "zh_HK", "zh_CN")):
+        _lang = "zh"
+    _title = args.title or cluster_name()
+
+    nodes = [n.strip() for n in args.nodes.split(",") if n.strip()] if args.nodes \
+        else discover_nodes()
+    if not nodes:
+        sys.exit("no nodes found - pass --nodes host1,host2")
+
+    if args.once:
+        print(render(nodes, args.proc, args.stack))
+        return
+    try:
+        print("\033[?25l", end="")
+        while True:
+            sys.stdout.write("\033[H\033[J" + render(nodes, args.proc, args.stack))
+            sys.stdout.flush()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("\033[?25h")
+
+
+if __name__ == "__main__":
+    main()
