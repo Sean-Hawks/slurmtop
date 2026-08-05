@@ -65,7 +65,7 @@ STRINGS = {
         "unreachable": "unreachable / nvidia-smi not responding",
         "hidden": "%d more job(s) hidden - run squeue for the full list",
         "footer": "Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval",
-        "gpus": "GPUs", "local": "local", "remote": "ssh",
+        "gpus": "GPUs", "local": "local", "remote": "ssh", "prog": "PROG",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -75,7 +75,7 @@ STRINGS = {
         "unreachable": "連不上或 nvidia-smi 無回應",
         "hidden": "…還有 %d 個 job 未顯示（用 squeue 看完整清單）",
         "footer": "Ctrl-C 離開  ·  --proc 看行程  ·  --stack 上下排列  ·  -n <秒> 改間隔",
-        "gpus": "張", "local": "本機", "remote": "ssh",
+        "gpus": "張", "local": "本機", "remote": "ssh", "prog": "進度",
     },
 }
 
@@ -179,6 +179,26 @@ def spark(vals, width=8):
     return "".join(out)
 
 
+def dur_sec(t):
+    t = (t or "").strip()
+    if t in ("", "N/A", "UNLIMITED", "NOT_SET", "INVALID"):
+        return None
+    days = 0
+    if "-" in t:
+        d, _, t = t.partition("-")
+        days = int(d) if d.isdigit() else 0
+    parts = [int(x) for x in t.split(":") if x.isdigit()]
+    if len(parts) == 3:
+        h, m, sec = parts
+    elif len(parts) == 2:
+        h, m, sec = 0, parts[0], parts[1]
+    elif len(parts) == 1:
+        h, m, sec = 0, 0, parts[0]
+    else:
+        return None
+    return ((days * 24 + h) * 60 + m) * 60 + sec
+
+
 def fmt_dur(t):
     """Slurm 的 D-HH:MM:SS / HH:MM:SS / MM:SS 轉成好讀的形式。"""
     t = (t or "").strip()
@@ -208,6 +228,41 @@ def fmt_dur(t):
 
 
 _hist = defaultdict(lambda: deque(maxlen=HIST))
+_tick = 0                                    # 每次重畫 +1，用來跑動畫
+
+SPINNER = "◐◓◑◒"
+SPINNER_ASCII = "|/-\\"
+
+
+def spinner():
+    chars = SPINNER_ASCII if _ascii else SPINNER
+    return chars[_tick % len(chars)]
+
+
+def trend(key, now):
+    """跟最近幾筆比，回傳 ▲ / ▼ / 中性符號。"""
+    h = list(_hist[key])[:-1][-4:]
+    if len(h) < 2:
+        return grey("·")
+    avg = sum(h) / len(h)
+    if now > avg + 4:
+        return rgb(231, 76, 60, "^" if _ascii else "▲")
+    if now < avg - 4:
+        return rgb(46, 204, 113, "v" if _ascii else "▼")
+    return grey("·")
+
+
+def gpu_strip(gpus, sep=""):
+    """每張卡一格燈號，一眼看完整台的分布。"""
+    ch = "#" if _ascii else "▉"
+    out = []
+    for g in gpus:
+        u = float(g[1])
+        if u < 1:
+            out.append(grey("." if _ascii else "▁"))
+        else:
+            out.append(rgb(*heat(u), ch))
+    return sep.join(out)
 
 
 def sh(cmd, timeout=12):
@@ -352,11 +407,13 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     right = (f" {busy}/{len(d['gpus'])} {T('busy')} {dim('·')} {vram_u:.0f}G {dim('·')} "
              f"{mag('%.1f kW' % (power / 1000))} {dim('·')} {tmax}°C ")
     fill = max(0, inner - vlen(left) - vlen(right))
-    rows.append(TL + left + H * fill + right + TR)
+    edge = rgb(*heat(avg_util), H * fill)          # 邊框顏色跟著整台負載走
+    rows.append(TL + left + edge + right + TR)
 
     sp = (" " + spark(_hist[(node, "cpu")], 8)) if sparks else ""
     ld = d["load"]
-    line(f" {bold('CPU')} {gradbar(d['cpu_pct'])} {d['cpu_pct']:5.1f}%{sp} "
+    line(f" {bold('CPU')} {gradbar(d['cpu_pct'])} {d['cpu_pct']:5.1f}%"
+         f" {trend((node, 'cpu'), d['cpu_pct'])}{sp} "
          f"{dim(f'load {ld[0]:.0f} {ld[1]:.0f} {ld[2]:.0f}')}")
     mem_txt = "%.0f/%.0f GiB" % (d["mem_used"] / 1024, d["mem_total"] / 1024)
     line(f" {bold('RAM')} {gradbar(mem_pct)} {mem_pct:5.1f}%   {dim(mem_txt)}")
@@ -402,39 +459,61 @@ def cluster_header(snaps, width):
     vram_t = sum(float(g[3]) for g in gpus) / 1024
     _hist[("all", "gpu")].append(avg)
 
-    left = (f"{bold(_title)}  {gradbar(avg, 16)} {avg:5.1f}% "
+    left = (f"{bold(_title)}  {gradbar(avg, 16)} {avg:5.1f}% {trend(('all', 'gpu'), avg)} "
             f"{spark(_hist[('all', 'gpu')], 10)}  {bold(str(busy))}/{len(gpus)} {T('gpus')} {dim('·')} "
             f"{vram_u:.0f}/{vram_t:.0f}G {dim('·')} {mag('%.2f kW' % (power / 1000))} "
             f"{dim('·')} {tmax}°C")
     clock = dim(" " + time.strftime("%H:%M:%S"))
-    return [pad(left, max(0, width - vlen(clock))) + clock]
+    out = [pad(left, max(0, width - vlen(clock))) + clock]
+
+    # 全叢集 GPU 燈條：每張卡一格，節點之間用分隔
+    strips = [gpu_strip(d["gpus"]) for d in snaps if d and d["gpus"]]
+    if strips:
+        bar = ("  " + dim("│") + "  ").join(strips)
+        out.append(f"  {dim(T('gpus'))} {bar}")
+    return out
+
+
+def progress(elapsed, limit, width=8):
+    """job 已用掉多少時間上限。快到上限會轉紅。"""
+    e, l = dur_sec(elapsed), dur_sec(limit)
+    if not l or e is None:
+        return grey(("." if _ascii else "·") * width)
+    pct = min(100.0, 100.0 * e / l)
+    _, full, empty, _, _ = glyphs()
+    filled = int(round(pct / 100 * width))
+    col = heat(pct)
+    return rgb(*col, full * filled) + grey(empty * (width - filled))
 
 
 def job_cell(f, narrow):
     """一個 job 的一列字串。narrow 用在多欄排版。"""
     jid, name, st, elapsed, left, nodes, cpus, gres, where = f[:9]
+    limit = f[9] if len(f) > 9 else ""
     if st == "R":
-        badge = rgb(46, 204, 113, "● " + T("run"))
+        badge = rgb(46, 204, 113, spinner() + " " + T("run"))
     elif st == "PD":
-        badge = rgb(241, 196, 15, "◐ " + T("pend"))
+        badge = rgb(241, 196, 15, ("." if _ascii else "◌") + " " + T("pend"))
     else:
-        badge = grey(f"○ {st}")
+        badge = grey(f"o {st}" if _ascii else f"○ {st}")
     gpu = gres.replace("gres:gpu:", "").replace("N/A", "-")
     if narrow:
         return (f" {bold('%7s' % jid[:7])} {name[:9]:<9} {pad(badge, 6)} "
-                f"{pad(fmt_dur(elapsed), 7)} {pad(fmt_dur(left), 7)}{gpu:>2} "
-                f"{cyan(where[:20])}")
+                f"{pad(fmt_dur(elapsed), 7)} {progress(elapsed, limit, 5)} "
+                f"{pad(fmt_dur(left), 7)}{gpu:>2} {cyan(where[:16])}")
     return (f"  {bold('%7s' % jid[:7])}  {name[:11]:<11} {pad(badge, 7)} "
-            f"{pad(fmt_dur(elapsed), 9)} {pad(fmt_dur(left), 9)} "
-            f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:22])}")
+            f"{pad(fmt_dur(elapsed), 9)} {progress(elapsed, limit)} "
+            f"{pad(fmt_dur(left), 9)} "
+            f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:20])}")
 
 
 def job_header(narrow):
     if narrow:
         return (f" {T('job'):>7} {T('name'):<9} {pad(T('state'), 6)} "
-                f"{pad(T('used'), 7)} {pad(T('left'), 7)}{T('gpu'):>2} {T('where')}")
+                f"{pad(T('used'), 7)} {pad(T('prog'), 5)} "
+                f"{pad(T('left'), 7)}{T('gpu'):>2} {T('where')}")
     return (f"  {T('job'):>7}  {T('name'):<11} {pad(T('state'), 7)} "
-            f"{pad(T('used'), 9)} {pad(T('left'), 9)} "
+            f"{pad(T('used'), 9)} {pad(T('prog'), 8)} {pad(T('left'), 9)} "
             f"{T('nd'):>2} {T('cpu'):>4} {T('gpu'):>4}  {T('where')}")
 
 
@@ -449,12 +528,12 @@ def slurm_section(width, max_rows=99, job_cols=1):
         rows.append(V + pad(c, inner) + V)
 
     hidden = 0
-    raw = sh('squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R"').strip()
+    raw = sh('squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l"').strip()
     if not raw:
         line(dim("  " + T("no_jobs")))
     else:
         parsed = [ln.split("|") for ln in raw.splitlines()]
-        parsed = [f for f in parsed if len(f) >= 9]
+        parsed = [f for f in parsed if len(f) >= 10]
         narrow = job_cols > 1
         colw = inner // job_cols
 
@@ -493,6 +572,8 @@ def render(nodes, show_proc=False, force_stack=False, fit=False):
     size = shutil.get_terminal_size((120, 45))
     cols, lines = size.columns, size.lines
     sparks = cols >= 118
+    global _tick
+    _tick += 1
     snaps = [snapshot(n) for n in nodes]
 
     if not fit:

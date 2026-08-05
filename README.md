@@ -16,30 +16,30 @@ jobs start and the queue drain as they finish.*
 <summary>Same thing as text</summary>
 
 ```
-hipac-team3  ▕█░░░░░░░░░░░░░░░▏   6.2% ▁▁▁▁▁▁▁▁▁▁  1/16 GPUs · 187/2246G · 2.40 kW · 49°C                   06:10:12
-╭ n1 local ────────────── 0/8 busy · 58G · 1.1 kW · 39°C ╮╭ n2 ssh ─────────────── 1/8 busy · 129G · 1.3 kW · 49°C ╮
-│ CPU ▕░░░░░░░░░░░░░░▏   0.9% ▁▁▁▁▁▁▁▁ load 8 8 8        ││ CPU ▕░░░░░░░░░░░░░░▏   0.9% ▁▁▁▁▁▁▁▁ load 6 5 6        │
-│ RAM ▕░░░░░░░░░░░░░░▏   1.6%   32/2016 GiB              ││ RAM ▕░░░░░░░░░░░░░░▏   0.6%   13/2016 GiB              │
-│ GPU0 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   7.3G 39°  144W     ││ GPU0 ▕████████████▏  99% ▁▁▁▁▁▁▁█ 128.6G 49°  501W     │
-│ GPU1 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   7.3G 38°  143W     ││ GPU1 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   0.0G 37°  122W     │
-│ GPU2 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   7.3G 38°  143W     ││ GPU2 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   0.0G 37°  127W     │
-│ GPU3 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   7.3G 39°  141W     ││ GPU3 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   0.0G 37°  119W     │
-│ GPU4 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   7.3G 38°  142W     ││ GPU4 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   0.0G 35°   77W     │
-│ GPU5 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   7.3G 38°  140W     ││ GPU5 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   0.0G 37°  119W     │
-│ GPU6 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   7.3G 39°  142W     ││ GPU6 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   0.0G 35°   77W     │
-│ GPU7 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   7.3G 39°  143W     ││ GPU7 ▕░░░░░░░░░░░░▏   0% ▁▁▁▁▁▁▁▁   0.0G 37°  123W     │
+hipac-team3  ▕██████████░░░░░░▏  65.4% · ▁▁▁▁▁▁▁▁▁▆  16/16 GPUs · 1727/2246G · 9.57 kW · 60°C               02:53:06
+  GPUs ▉▉▉▉▉▉▉▉  │  ▉▉▉▉▉▉▉▉
+╭ n1 local ───────────── 8/8 busy · 863G · 5.3 kW · 60°C ╮╭ n2 ssh ─────────────── 8/8 busy · 864G · 4.3 kW · 51°C ╮
+│ CPU ▕█░░░░░░░░░░░░░▏   3.9% · ▁▁▁▁▁▁▁▁ load 11 9 10    ││ CPU ▕█░░░░░░░░░░░░░▏   3.7% · ▁▁▁▁▁▁▁▁ load 8 10 11    │
+│ RAM ▕█░░░░░░░░░░░░░▏   4.4%   88/2016 GiB              ││ RAM ▕█░░░░░░░░░░░░░▏   5.2%   104/2016 GiB             │
+│ GPU0 ▕████████████▏  98% ▁▁▁▁▁▁▁█ 110.4G 60°  642W     ││ GPU0 ▕█████░░░░░░░▏  44% ▁▁▁▁▁▁▁▄ 110.5G 47°  528W     │
+│ GPU1 ▕████████████▏  98% ▁▁▁▁▁▁▁█ 107.5G 58°  678W     ││ GPU1 ▕███░░░░░░░░░▏  28% ▁▁▁▁▁▁▁▃ 107.6G 50°  548W     │
+│ GPU2 ▕████████████▏  98% ▁▁▁▁▁▁▁█ 107.5G 57°  676W     ││ GPU2 ▕█████░░░░░░░▏  38% ▁▁▁▁▁▁▁▄ 107.6G 48°  549W     │
+│ GPU3 ▕████████████▏  98% ▁▁▁▁▁▁▁█ 107.5G 57°  659W     ││ GPU3 ▕██████░░░░░░▏  47% ▁▁▁▁▁▁▁▄ 107.6G 49°  539W     │
+│ GPU4 ▕████████████▏  98% ▁▁▁▁▁▁▁█ 107.5G 58°  680W     ││ GPU4 ▕██░░░░░░░░░░▏  20% ▁▁▁▁▁▁▁▂ 107.6G 51°  533W     │
+│ GPU5 ▕████████████▏  98% ▁▁▁▁▁▁▁█ 107.5G 57°  633W     ││ GPU5 ▕█░░░░░░░░░░░▏  12% ▁▁▁▁▁▁▁▂ 107.6G 48°  520W     │
+│ GPU6 ▕████████████▏  98% ▁▁▁▁▁▁▁█ 107.5G 58°  651W     ││ GPU6 ▕█████░░░░░░░▏  38% ▁▁▁▁▁▁▁▄ 107.6G 48°  517W     │
+│ GPU7 ▕████████████▏  98% ▁▁▁▁▁▁▁█ 107.5G 58°  677W     ││ GPU7 ▕████░░░░░░░░▏  36% ▁▁▁▁▁▁▁▄ 107.6G 47°  541W     │
 ╰────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
 ╭ Slurm queue ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│    JOB  NAME        STATE  ELAPSED   LEFT       N  CPU  GPU  WHERE                                               │
-│     45  hpl-full    ◐ pend  0s        20m00s     2  224    8  (Resources)                                        │
-│     48  qe          ◐ pend  0s        30m00s     1  112    8  (Nodes required for jo                             │
-│     33  qe          ● run   18m32s    2h41m      1  224    8  n1                                                 │
-│     47  racing-base ● run   15m49s    54m11s     1    4    1  n2                                                 │
+│      JOB  NAME        STATE   ELAPSED   PROG     LEFT       N  CPU  GPU  WHERE                                   │
+│      212  qegdr       ◌ pend  0s        ░░░░░░░░ 1h00m      2  224    8  (Resources)                             │
+│      208  qe-pw-o7    ◓ run   8m51s     ███░░░░░ 16m09s     1  224    8  n2                                      │
+│      211  qeucc       ◓ run   1m34s     ░░░░░░░░ 58m26s     1  224    8  n1                                      │
 │ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │
-│  n1 allocated CPU ▕██████████▏ 224/224 idle 0   RAM free 1457 GiB                                                │
-│  n2 mixed    CPU ▕░░░░░░░░░░▏ 4/224 idle 220   RAM free 1548 GiB                                                 │
+│  n1 allocated CPU ▕██████████▏ 224/224 idle 0   RAM free 1481 GiB                                                │
+│  n2 allocated CPU ▕██████████▏ 224/224 idle 0   RAM free 1156 GiB                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval
+  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                 team-03/Hawks · v1.0.0
 ```
 
 </details>
@@ -111,9 +111,13 @@ rest are read over SSH, one round trip each per refresh.
 |---|---|
 | `▕███░░░▏` | gradient bar, green → yellow → red |
 | `▁▂▃▅▇` | sparkline of the last 24 refreshes — tells idle-but-spiky apart from steadily pegged |
-| `● run` / `◐ pend` | Slurm job state |
+| `▲` `▼` | trend against the last few samples |
+| `GPUs ▉▉▁▁▁▁▁▁ │ ▉▉▉▉▉▉▉▉` | one cell per GPU in the cluster, grouped by node — the whole fleet at a glance |
+| `◓ run` / `◌ pend` | Slurm job state; the running marker spins on every refresh |
+| `PROG ███░░░░░` | how much of the job's time limit is used up — turns red as it approaches the wall |
 | `2h45m`, `20m00s`, `3d02h` | durations, always with units |
 | header line | cluster totals: mean GPU utilisation, busy GPU count, VRAM, power draw, hottest GPU |
+| panel border | tinted by that node's average GPU load |
 
 By default nothing is hidden: every GPU row and every queued job is printed,
 even if the result is taller than the window. If the queue is long, the job
