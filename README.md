@@ -118,7 +118,7 @@ rest are read over SSH, one round trip each per refresh.
 | `▕███░░░▏` | gradient bar, green → yellow → red |
 | `▁▂▃▅▇` | sparkline of the last 24 refreshes — tells idle-but-spiky apart from steadily pegged |
 | `▲` `▼` | trend against the last few samples |
-| seven-segment readout | cluster GPU utilisation, tinted by the value |
+| arc gauge | cluster GPU utilisation — the dome fills left to right and is tinted by the value, so both shape and colour carry the reading |
 | `◤ ◥` `┤ ├` | HUD chrome — section labels and frame ticks |
 | `◉` | per-node status LED, tinted by that node's load |
 | tinted panel background | the whole node zone warms up with its load — amber past 45 %, orange past 75 %, pulsing red past 90 % — so the node that is cooking is obvious without reading a single number |

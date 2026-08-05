@@ -263,6 +263,25 @@ SEG = {
 }
 
 
+ARC = [1, 2, 4, 5, 6, 7, 8, 8, 8, 7, 6, 5, 4, 2, 1]   # 拱形輪廓（單位：八分之一格）
+
+
+def arc_gauge(pct):
+    """弧形刻度：由左到右代表 0→100%，亮起來的段數就是目前的值。"""
+    lit = int(round(max(0.0, min(100.0, pct)) / 100 * len(ARC)))
+    cells = []
+    for i, h in enumerate(ARC):
+        ch = ("#" if _ascii else EIGHTHS[h])
+        if i < lit:
+            col = heat((i + 1) / len(ARC) * 100)
+            if pct >= 90:
+                col = pulse(col, 0.3)
+            cells.append(rgb(*col, ch))
+        else:                                 # 未達到的段落壓平，形狀本身就看得出高低
+            cells.append(grey("." if _ascii else "▁"))
+    return "".join(cells)
+
+
 def big(text, color):
     """把字串畫成 5 行高的七段字。核心亮、邊緣暗，做出發光感。"""
     rows = []
@@ -658,27 +677,25 @@ def cluster_header(snaps, width):
     fill = max(0, width - vlen(tag) - vlen(clock) - 2)
     out = [cyan("◤") + tag + dim("─" * fill) + clock + cyan("◥")]
 
-    # 左邊七段大字，右邊遙測欄
-    digits = big(f"{avg:3.0f}%", heat(avg)) if not _ascii else ["" for _ in range(5)]
+    # 左邊弧形儀表，右邊遙測欄
     lab = lambda t: dim(cyan(f"{t:<5}"))
+    gauge = [
+        "  " + arc_gauge(avg),
+        "  " + pad(f"{bold('%.1f%%' % avg)} {dim(cyan('UTIL'))}", 17),
+        "  " + pad(f"{trend(('all', 'gpu'), avg)} {spark(_hist[('all', 'gpu')], 12)}", 17),
+    ]
     tele = [
-        f"{lab('UTIL')} {gradbar(avg, 18, avg >= 90)} {bold('%5.1f%%' % avg)} "
-        f"{trend(('all', 'gpu'), avg)}  {spark(_hist[('all', 'gpu')], 12)}"
-        + (("  " + blink("◆ FULL LOAD", (255, 170, 40))) if avg >= 90 else ""),
-        f"{lab('CORE')} {bold(str(busy))}/{len(gpus)} {dim('online')}   "
-        f"{lab('MEM')} {vram_u:.0f}{dim('/')}{vram_t:.0f} GiB",
+        f"{lab('CORE')} {bold(str(busy))}/{len(gpus)} {dim('online')}"
+        + (("   " + blink("◆ FULL LOAD", (255, 170, 40))) if avg >= 90 else ""),
         f"{lab('PWR')}  {mag('%.2f kW' % (power / 1000))}   "
+        f"{lab('MEM')} {vram_u:.0f}{dim('/')}{vram_t:.0f} GiB   "
         f"{lab('THRM')} {rgb(*heat(max(0, min(100, (tmax - 35) / 50 * 100))), '%d°C' % tmax)}"
-        f" {dim('max')}"
         + (("  " + blink("▲ THERMAL", (231, 76, 60))) if tmax >= ALERT_TEMP else ""),
         f"{lab('GRID')} " + ("  " + dim("│") + "  ").join(
             gpu_strip(d["gpus"]) for d in snaps if d and d["gpus"]),
-        "",
     ]
-    for i in range(5):
-        left = digits[i] if i < len(digits) else ""
-        row = "  " + pad(left, 18) + (tele[i] if i < len(tele) else "")
-        out.append(clip(row, width))          # 超出寬度會折行，版面就歪了
+    for i in range(3):
+        out.append(clip(pad(gauge[i], 21) + tele[i], width))
     return out
 
 
