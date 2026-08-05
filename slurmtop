@@ -25,6 +25,7 @@ __version__ = "1.0.0"
 __credits__ = "team-03/Hawks"
 
 import argparse
+import math
 import os
 import re
 import shutil
@@ -148,15 +149,20 @@ def clip(s, width):
     return "".join(out) + "\033[0m"
 
 
-def gradbar(pct, width=14):
-    """漸層長條：每一格依自身位置著色，填滿的部分才亮。"""
+def gradbar(pct, width=14, hot=False):
+    """漸層長條：每一格依自身位置著色，填滿的部分才亮。hot=滿載，會呼吸。"""
     pct = max(0.0, min(100.0, pct))
     filled = int(round(pct / 100 * width))
     _, full, empty, lcap, rcap = glyphs()
+    scan = _tick % (width * 2)                 # 掃描光點的位置
     out = []
     for i in range(width):
         if i < filled:
             r, g, b = heat((i + 1) / width * 100)
+            if hot:
+                r, g, b = pulse((r, g, b), 0.28)
+            if i == scan:                      # 掃到的那格提亮
+                r, g, b = [min(255, int(c + (255 - c) * 0.65)) for c in (r, g, b)]
             out.append(rgb(r, g, b, full))
         else:
             out.append(grey(empty))
@@ -230,6 +236,74 @@ def fmt_dur(t):
 _hist = defaultdict(lambda: deque(maxlen=HIST))
 _tick = 0                                    # 每次重畫 +1，用來跑動畫
 
+# 七段風格的大字，給 HUD 主讀數用
+SEG = {
+    "0": ["███", "█ █", "█ █", "█ █", "███"],
+    "1": ["  █", "  █", "  █", "  █", "  █"],
+    "2": ["███", "  █", "███", "█  ", "███"],
+    "3": ["███", "  █", "███", "  █", "███"],
+    "4": ["█ █", "█ █", "███", "  █", "  █"],
+    "5": ["███", "█  ", "███", "  █", "███"],
+    "6": ["███", "█  ", "███", "█ █", "███"],
+    "7": ["███", "  █", "  █", "  █", "  █"],
+    "8": ["███", "█ █", "███", "█ █", "███"],
+    "9": ["███", "█ █", "███", "  █", "███"],
+    "%": ["█ █", "  █", " █ ", "█  ", "█ █"],
+    "S": ["███", "█  ", "███", "  █", "███"],
+    "L": ["█  ", "█  ", "█  ", "█  ", "███"],
+    "U": ["█ █", "█ █", "█ █", "█ █", "███"],
+    "R": ["███", "█ █", "███", "█ █", "█ █"],
+    "M": ["█ █", "███", "███", "█ █", "█ █"],
+    "T": ["███", " █ ", " █ ", " █ ", " █ "],
+    "O": ["███", "█ █", "█ █", "█ █", "███"],
+    "P": ["███", "█ █", "███", "█  ", "█  "],
+    " ": ["   ", "   ", "   ", "   ", "   "],
+}
+
+
+def big(text, color):
+    """把字串畫成 5 行高的七段字。核心亮、邊緣暗，做出發光感。"""
+    rows = []
+    for r in range(5):
+        line = ""
+        for chx in text:
+            glyph = SEG.get(chx, SEG[" "])[r]
+            for cell in glyph:
+                line += rgb(*color, "█") if cell == "█" else " "
+            line += " "
+        rows.append(line)
+    return rows
+
+
+# --- 過熱 / 滿載時的反應式動畫 ---
+HOT_TEMP = 70          # °C 以上開始冒熱氣
+ALERT_TEMP = 78        # °C 以上跳警示
+HOT_UTIL = 95          # % 以上算滿載
+
+PLUME = "≋≈~"
+PLUME_ASCII = "^~-"
+
+
+def pulse(color, amount=0.4):
+    """讓顏色隨著重畫次數明暗呼吸，用在滿載的東西上。"""
+    f = 0.5 + 0.5 * math.cos(_tick * 0.9)
+    return tuple(min(255, int(c + (255 - c) * amount * f)) for c in color)
+
+
+def plume(temp, util):
+    """熱氣。溫度高或滿載時在旁邊冒一格，會隨著時間變形。"""
+    if temp < HOT_TEMP and util < HOT_UTIL:
+        return " "
+    chars = PLUME_ASCII if _ascii else PLUME
+    ch = chars[(_tick + temp) % len(chars)]      # 加 temp 讓每張卡不同步
+    return rgb(*pulse(heat(100 if temp >= ALERT_TEMP else 88), 0.3), ch)
+
+
+def blink(text, color, period=2):
+    """警示閃爍：一半的時間亮，一半的時間暗。"""
+    return rgb(*color, text) if _tick % (period * 2) < period else dim(text)
+
+
 SPINNER = "◐◓◑◒"
 SPINNER_ASCII = "|/-\\"
 
@@ -260,6 +334,8 @@ def gpu_strip(gpus, sep=""):
         u = float(g[1])
         if u < 1:
             out.append(grey("." if _ascii else "▁"))
+        elif u >= HOT_UTIL:
+            out.append(rgb(*pulse(heat(u), 0.35), ch))
         else:
             out.append(rgb(*heat(u), ch))
     return sep.join(out)
@@ -403,7 +479,10 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
 
     # 標題列
     where = T("local") if is_local(node) else T("remote")
-    left = f" {bold(cyan(node))} {dim(where)} "
+    dot = "o" if _ascii else "◉"
+    led = (blink(dot, heat(avg_util)) if avg_util >= 90 else rgb(*heat(avg_util), dot))
+    left = (f"{dim(cyan('┤'))} {dim('NODE')} {bold(cyan(node))} {led} "
+            f"{dim(where.upper())} {dim(cyan('├'))}")
     right = (f" {busy}/{len(d['gpus'])} {T('busy')} {dim('·')} {vram_u:.0f}G {dim('·')} "
              f"{mag('%.1f kW' % (power / 1000))} {dim('·')} {tmax}°C ")
     fill = max(0, inner - vlen(left) - vlen(right))
@@ -412,11 +491,11 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
 
     sp = (" " + spark(_hist[(node, "cpu")], 8)) if sparks else ""
     ld = d["load"]
-    line(f" {bold('CPU')} {gradbar(d['cpu_pct'])} {d['cpu_pct']:5.1f}%"
+    line(f" {dim(cyan('CPU'))} {gradbar(d['cpu_pct'])} {d['cpu_pct']:5.1f}%"
          f" {trend((node, 'cpu'), d['cpu_pct'])}{sp} "
          f"{dim(f'load {ld[0]:.0f} {ld[1]:.0f} {ld[2]:.0f}')}")
     mem_txt = "%.0f/%.0f GiB" % (d["mem_used"] / 1024, d["mem_total"] / 1024)
-    line(f" {bold('RAM')} {gradbar(mem_pct)} {mem_pct:5.1f}%   {dim(mem_txt)}")
+    line(f" {dim(cyan('MEM'))} {gradbar(mem_pct)} {mem_pct:5.1f}%   {dim(mem_txt)}")
     for g in d["gpus"]:                      # 歷史一定要更新，即使沒畫出來
         _hist[(node, f"g{g[0]}")].append(float(g[1]))
 
@@ -432,7 +511,8 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
         mu, mt, temp, pw = float(g[2]), float(g[3]), int(float(g[4])), float(g[5])
         tcol = heat(max(0, min(100, (temp - 35) / 50 * 100)))
         sp = (" " + spark(_hist[(node, f"g{idx}")], 8)) if sparks else ""
-        line(f" {dim('GPU')}{bold(idx)} {gradbar(util, 12)} {util:3.0f}%{sp} "
+        line(f" {dim(cyan('G'))}{bold(idx)} {gradbar(util, 12, util >= HOT_UTIL)} "
+             f"{util:3.0f}%{plume(temp, util)}{sp} "
              f"{mu/1024:5.1f}G {rgb(*tcol, f'{temp:>2}°')} {dim(f'{pw:4.0f}W')}")
 
     if show_proc and d["procs"]:
@@ -445,11 +525,38 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     return rows
 
 
+def splash(nodes):
+    """開機動畫。純裝飾，--no-splash 可關掉。"""
+    steps = [
+        "probing slurm controller",
+        f"discovering nodes ... {len(nodes)} found",
+        "opening telemetry links",
+        "arming sparkline buffers",
+        "link established",
+    ]
+    W = 62
+    for i in range(len(steps) * 3):
+        step = steps[min(i // 3, len(steps) - 1)]
+        # 每幀讓 logo 的顏色掃過去一次，做出通電感
+        t = (i % 6) / 5
+        col = tuple(int(86 + (255 - 86) * t * f) for f in (1, 0.5, 0.2))
+        col = (min(255, col[0]), min(255, 211 + col[1] // 8), min(255, 240))
+        body = big("SLURMTOP", col)
+        done = int((i + 1) / (len(steps) * 3) * (W - 2))
+        bar = (rgb(86, 211, 240, "█" * done) + grey("░" * (W - 2 - done)))
+        frame = ["", *["   " + b for b in body], "",
+                 "   " + cyan("[") + bar + cyan("]"),
+                 "   " + dim("· " + step + " ..."), ""]
+        sys.stdout.write("\033[H\033[J" + "\n".join(frame))
+        sys.stdout.flush()
+        time.sleep(0.07)
+
+
 def cluster_header(snaps, width):
-    """最上面的叢集總覽列。"""
+    """HUD 主讀數：七段大字 + 遙測列 + 全叢集 GPU 格點圖。"""
     gpus = [g for d in snaps if d for g in d["gpus"]]
     if not gpus:
-        return [rgb(231, 76, 60, "叢集無回應")]
+        return [rgb(231, 76, 60, "NO TELEMETRY")]
     utils = [float(g[1]) for g in gpus]
     avg = sum(utils) / len(utils)
     busy = sum(1 for u in utils if u > 5)
@@ -459,18 +566,32 @@ def cluster_header(snaps, width):
     vram_t = sum(float(g[3]) for g in gpus) / 1024
     _hist[("all", "gpu")].append(avg)
 
-    left = (f"{bold(_title)}  {gradbar(avg, 16)} {avg:5.1f}% {trend(('all', 'gpu'), avg)} "
-            f"{spark(_hist[('all', 'gpu')], 10)}  {bold(str(busy))}/{len(gpus)} {T('gpus')} {dim('·')} "
-            f"{vram_u:.0f}/{vram_t:.0f}G {dim('·')} {mag('%.2f kW' % (power / 1000))} "
-            f"{dim('·')} {tmax}°C")
-    clock = dim(" " + time.strftime("%H:%M:%S"))
-    out = [pad(left, max(0, width - vlen(clock))) + clock]
+    # 頂列：◤ SLURMTOP ── cluster ─────────── 時間 ◥
+    tag = f" {bold(cyan('SLURMTOP'))} {dim('//')} {bold(_title)} "
+    clock = f" {dim(time.strftime('%H:%M:%S'))} "
+    fill = max(0, width - vlen(tag) - vlen(clock) - 2)
+    out = [cyan("◤") + tag + dim("─" * fill) + clock + cyan("◥")]
 
-    # 全叢集 GPU 燈條：每張卡一格，節點之間用分隔
-    strips = [gpu_strip(d["gpus"]) for d in snaps if d and d["gpus"]]
-    if strips:
-        bar = ("  " + dim("│") + "  ").join(strips)
-        out.append(f"  {dim(T('gpus'))} {bar}")
+    # 左邊七段大字，右邊遙測欄
+    digits = big(f"{avg:3.0f}%", heat(avg)) if not _ascii else ["" for _ in range(5)]
+    lab = lambda t: dim(cyan(f"{t:<5}"))
+    tele = [
+        f"{lab('UTIL')} {gradbar(avg, 18, avg >= 90)} {bold('%5.1f%%' % avg)} "
+        f"{trend(('all', 'gpu'), avg)}  {spark(_hist[('all', 'gpu')], 12)}"
+        + (("  " + blink("◆ FULL LOAD", (255, 170, 40))) if avg >= 90 else ""),
+        f"{lab('CORE')} {bold(str(busy))}/{len(gpus)} {dim('online')}   "
+        f"{lab('MEM')} {vram_u:.0f}{dim('/')}{vram_t:.0f} GiB",
+        f"{lab('PWR')}  {mag('%.2f kW' % (power / 1000))}   "
+        f"{lab('THRM')} {rgb(*heat(max(0, min(100, (tmax - 35) / 50 * 100))), '%d°C' % tmax)}"
+        f" {dim('max')}"
+        + (("  " + blink("▲ THERMAL", (231, 76, 60))) if tmax >= ALERT_TEMP else ""),
+        f"{lab('GRID')} " + ("  " + dim("│") + "  ").join(
+            gpu_strip(d["gpus"]) for d in snaps if d and d["gpus"]),
+        "",
+    ]
+    for i in range(5):
+        left = digits[i] if i < len(digits) else ""
+        out.append("  " + pad(left, 18) + (tele[i] if i < len(tele) else ""))
     return out
 
 
@@ -482,7 +603,7 @@ def progress(elapsed, limit, width=8):
     pct = min(100.0, 100.0 * e / l)
     _, full, empty, _, _ = glyphs()
     filled = int(round(pct / 100 * width))
-    col = heat(pct)
+    col = pulse(heat(pct), 0.3) if pct >= 85 else heat(pct)
     return rgb(*col, full * filled) + grey(empty * (width - filled))
 
 
@@ -521,7 +642,7 @@ def slurm_section(width, max_rows=99, job_cols=1):
     """回傳 (畫面行, 沒顯示到的 job 數)。job_cols>1 時佇列會排成多欄。"""
     inner = width - 2
     rows = []
-    title = f" {bold(T('queue'))} "
+    title = f"{dim(cyan('┤'))} {bold(T('queue'))} {dim(cyan('├'))}"
     rows.append(TL + title + H * max(0, inner - vlen(title)) + TR)
 
     def line(c):
@@ -654,6 +775,7 @@ def main():
     ap.add_argument("--fit", action="store_true",
                     help="squeeze everything into one screen (drops detail if needed)")
     ap.add_argument("--no-color", action="store_true", help="disable colour")
+    ap.add_argument("--no-splash", action="store_true", help="skip the boot animation")
     ap.add_argument("--ascii", action="store_true",
                     help="ASCII bars/sparklines for fonts without block glyphs")
     ap.add_argument("--lang", choices=sorted(STRINGS), help="ui language (default: auto)")
@@ -683,6 +805,8 @@ def main():
         # 1049h = 切到備用畫面緩衝區，25l = 藏游標。
         # 用備用緩衝區而不是狂清畫面，捲動時才不會把舊的畫面留在 scrollback。
         sys.stdout.write("\033[?1049h\033[?25l")
+        if not args.no_splash and not _ascii:
+            splash(nodes)
         while True:
             sys.stdout.write("\033[H\033[J" + render(nodes, args.proc, args.stack, args.fit))
             sys.stdout.flush()

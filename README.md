@@ -97,6 +97,7 @@ slurmtop --proc             # also list the processes on each GPU
 slurmtop --stack            # force vertical layout
 slurmtop --fit              # squeeze into one screen instead of showing everything
 slurmtop --no-color         # plain text
+slurmtop --no-splash        # skip the boot animation
 slurmtop --ascii            # ASCII bars, for fonts without block glyphs
 slurmtop --lang zh          # 繁體中文介面（預設依 $LANG 自動判斷）
 slurmtop --title "lab-gpu"  # header title (default: Slurm ClusterName)
@@ -112,6 +113,14 @@ rest are read over SSH, one round trip each per refresh.
 | `▕███░░░▏` | gradient bar, green → yellow → red |
 | `▁▂▃▅▇` | sparkline of the last 24 refreshes — tells idle-but-spiky apart from steadily pegged |
 | `▲` `▼` | trend against the last few samples |
+| seven-segment readout | cluster GPU utilisation, tinted by the value |
+| `◤ ◥` `┤ ├` | HUD chrome — section labels and frame ticks |
+| `◉` | per-node status LED, tinted by that node's load |
+| moving bright cell in a bar | scan sweep, advances every refresh |
+| `≋ ≈ ~` next to a GPU | heat plume — the GPU is ≥70 °C or ≥95 % utilised |
+| breathing bars | anything pegged at ≥95 % pulses; so does a job within 15 % of its time limit |
+| `◆ FULL LOAD` | cluster mean utilisation ≥90 %, blinking |
+| `▲ THERMAL` | hottest GPU ≥78 °C, blinking |
 | `GPUs ▉▉▁▁▁▁▁▁ │ ▉▉▉▉▉▉▉▉` | one cell per GPU in the cluster, grouped by node — the whole fleet at a glance |
 | `◓ run` / `◌ pend` | Slurm job state; the running marker spins on every refresh |
 | `PROG ███░░░░░` | how much of the job's time limit is used up — turns red as it approaches the wall |
