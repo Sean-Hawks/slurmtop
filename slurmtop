@@ -676,6 +676,20 @@ def qr_lines(quiet=2):
     return out
 
 
+QR_W = 33          # 29 個模組 + 左右各 2 格靜區
+
+
+def qr_panel(height):
+    """畫面右下角的 QR 區塊，寬度固定 QR_W。"""
+    rows = [dim(cyan("┤")) + " " + dim("SCAN") + " " + dim(cyan("├"))]
+    rows[0] = rows[0] + dim("─" * max(0, QR_W - vlen(rows[0])))
+    rows += qr_lines(quiet=2)
+    rows.append(dim(cyan(REPO_URL[8:][:QR_W])))       # 去掉 https:// 讓它塞得下
+    while len(rows) < height:
+        rows.append("")
+    return rows
+
+
 def show_qr():
     print()
     for line in qr_lines():
@@ -848,7 +862,7 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None):
     return rows, hidden
 
 
-def render(nodes, show_proc=False, force_stack=False, fit=False):
+def render(nodes, show_proc=False, force_stack=False, fit=False, want_qr=True):
     size = shutil.get_terminal_size((120, 45))
     cols, lines = size.columns, size.lines
     sparks = cols >= 118
@@ -869,7 +883,7 @@ def render(nodes, show_proc=False, force_stack=False, fit=False):
                 break
             frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
                               sparks, compact=False, job_cols=jcols,
-                              slurm_data=slurm_data)
+                              slurm_data=slurm_data, want_qr=want_qr)
             if len(frame) <= lines:
                 break
         return "\n".join(frame)
@@ -881,7 +895,8 @@ def render(nodes, show_proc=False, force_stack=False, fit=False):
         if jcols > 1 and cols < 46 * jcols:
             continue
         frame, hidden = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
-                               sp, compact, jcols, slurm_data=slurm_data)
+                               sp, compact, jcols, slurm_data=slurm_data,
+                               want_qr=want_qr and not compact)
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
@@ -901,7 +916,7 @@ def scope_section(width, height=6):
 
 
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
-           job_cols=1, slurm_data=("", "")):
+           job_cols=1, slurm_data=("", ""), want_qr=True):
     panel_w = 58 if sparks else 49
     panels = [node_panel(n, d, panel_w, show_proc, sparks, compact)
               for n, d in zip(nodes, snaps)]
@@ -922,9 +937,18 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
 
     # 剩下的高度留給佇列：總高 - 已用 - Slurm 區塊固定開銷(6) - 頁尾(1) - 保險(1)
     budget = lines - len(out) - 8
-    sec, hidden = slurm_section(total_w, max_rows=max(1, budget), job_cols=job_cols,
+    show_qr_panel = want_qr and not _ascii and cols >= total_w and total_w - QR_W >= 60
+    qw = QR_W + 2 if show_qr_panel else 0
+    sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget), job_cols=job_cols,
                                 data=slurm_data)
-    out += sec
+    if show_qr_panel:
+        qr = qr_panel(len(sec))
+        for i in range(max(len(sec), len(qr))):
+            left = sec[i] if i < len(sec) else ""
+            right = qr[i] if i < len(qr) else ""
+            out.append(pad(left, total_w - qw) + "  " + right)
+    else:
+        out += sec
     footer = "  " + T("footer")
     sign = dim(f"team-03/Hawks · v{__version__}")
     if vlen(footer) + vlen(sign) + 2 <= total_w:          # 擠不下就只留署名
@@ -959,7 +983,9 @@ def main():
     ap.add_argument("--no-color", action="store_true", help="disable colour")
     ap.add_argument("--no-splash", action="store_true", help="skip the boot animation")
     ap.add_argument("--qr", action="store_true",
-                    help="print a scannable QR code for the project repo")
+                    help="print only the QR code for the project repo and exit")
+    ap.add_argument("--no-qr", action="store_true",
+                    help="hide the QR panel in the dashboard (shown by default)")
     ap.add_argument("--ascii", action="store_true",
                     help="ASCII bars/sparklines for fonts without block glyphs")
     ap.add_argument("--lang", choices=sorted(STRINGS), help="ui language (default: auto)")
@@ -987,7 +1013,7 @@ def main():
         sys.exit("no nodes found - pass --nodes host1,host2")
 
     if args.once:
-        print(render(nodes, args.proc, args.stack, args.fit))
+        print(render(nodes, args.proc, args.stack, args.fit, not args.no_qr))
         return
     try:
         # 1049h = 切到備用畫面緩衝區，25l = 藏游標。
@@ -996,7 +1022,9 @@ def main():
         if not args.no_splash and not _ascii:
             splash(nodes)
         while True:
-            sys.stdout.write("\033[H\033[J" + render(nodes, args.proc, args.stack, args.fit))
+            sys.stdout.write("\033[H\033[J"
+                             + render(nodes, args.proc, args.stack, args.fit,
+                                      not args.no_qr))
             sys.stdout.flush()
             time.sleep(args.interval)
     except KeyboardInterrupt:

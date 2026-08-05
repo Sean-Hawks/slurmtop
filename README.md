@@ -103,7 +103,8 @@ slurmtop --stack            # force vertical layout
 slurmtop --fit              # squeeze into one screen instead of showing everything
 slurmtop --no-color         # plain text
 slurmtop --no-splash        # skip the boot animation
-slurmtop --qr               # scannable QR code for this repo
+slurmtop --qr               # print only the QR code and exit
+slurmtop --no-qr            # hide the QR panel in the dashboard (on by default)
 slurmtop --ascii            # ASCII bars, for fonts without block glyphs
 slurmtop --lang zh          # 繁體中文介面（預設依 $LANG 自動判斷）
 slurmtop --title "lab-gpu"  # header title (default: Slurm ClusterName)
@@ -171,15 +172,22 @@ your scrollback.
 
 ## Scan it
 
+The dashboard carries a `SCAN` panel in the bottom right corner with a
+scannable QR code for this repo — handy for getting the link onto someone's
+phone at a competition without reading a URL out loud. Hide it with `--no-qr`;
+it also steps aside automatically when the terminal is too narrow to keep the
+queue readable.
+
+<img src="qr.png" width="180" alt="QR code for this repository">
+
+To print just the code:
+
 ```bash
 slurmtop --qr
 ```
 
-<img src="qr.png" width="180" alt="QR code for this repository">
-
-Prints a scannable QR code for this repo, straight in the terminal — handy for
-getting the link onto someone's phone at a competition without typing it out.
-The matrix is embedded in the script, so it needs no QR library on the machine.
+The matrix is embedded in the script, so no QR library is needed on the
+machine.
 
 ## Credits
 
