@@ -25,6 +25,7 @@ __version__ = "1.0.0"
 __credits__ = "team-03/Hawks"
 
 import argparse
+import concurrent.futures as _cf
 import math
 import os
 import re
@@ -234,6 +235,7 @@ def fmt_dur(t):
 
 
 _hist = defaultdict(lambda: deque(maxlen=HIST))
+_cpu_prev = {}                               # 每台上一次的 /proc/stat，用來算 CPU%
 _tick = 0                                    # 每次重畫 +1，用來跑動畫
 
 # 七段風格的大字，給 HUD 主讀數用
@@ -415,7 +417,7 @@ def is_local(node):
 
 
 REMOTE = f"""
-head -1 /proc/stat; sleep 0.25; head -1 /proc/stat
+head -1 /proc/stat
 echo '@@'
 cat /proc/loadavg; nproc
 echo '@@'
@@ -428,8 +430,13 @@ nvidia-smi --query-compute-apps={PROC_Q} --format=csv,noheader,nounits 2>/dev/nu
 
 
 def run_script(node, script, timeout=20):
-    argv = ["bash", "-s"] if is_local(node) else \
-           ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", node, "bash", "-s"]
+    # ControlMaster：第一次連線後重複使用，省掉每次重畫的 SSH 握手
+    argv = ["bash", "-s"] if is_local(node) else [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
+        "-o", "ControlMaster=auto",
+        "-o", f"ControlPath=/tmp/.slurmtop-{os.getuid()}-%r@%h:%p",
+        "-o", "ControlPersist=120",
+        node, "bash", "-s"]
     try:
         r = subprocess.run(argv, input=script, capture_output=True, text=True, timeout=timeout)
         return r.stdout
@@ -444,11 +451,17 @@ def snapshot(node):
     if len(parts) < 4:
         return None
     d = {}
+    # CPU% 用跟上一次重畫的累積值差算，不必在遠端 sleep 取樣
     try:
-        a, b = [list(map(int, ln.split()[1:])) for ln in parts[0].splitlines()[:2]]
-        idle_d = (b[3] + b[4]) - (a[3] + a[4])
-        tot_d = sum(b) - sum(a)
-        d["cpu_pct"] = max(0.0, 100.0 * (tot_d - idle_d) / tot_d) if tot_d else 0.0
+        cur = list(map(int, parts[0].splitlines()[0].split()[1:]))
+        prev = _cpu_prev.get(node)
+        _cpu_prev[node] = cur
+        if prev and len(prev) == len(cur):
+            idle_d = (cur[3] + cur[4]) - (prev[3] + prev[4])
+            tot_d = sum(cur) - sum(prev)
+            d["cpu_pct"] = max(0.0, min(100.0, 100.0 * (tot_d - idle_d) / tot_d)) if tot_d else 0.0
+        else:
+            d["cpu_pct"] = 0.0
     except Exception:
         d["cpu_pct"] = 0.0
     try:
@@ -664,7 +677,8 @@ def cluster_header(snaps, width):
     ]
     for i in range(5):
         left = digits[i] if i < len(digits) else ""
-        out.append("  " + pad(left, 18) + (tele[i] if i < len(tele) else ""))
+        row = "  " + pad(left, 18) + (tele[i] if i < len(tele) else "")
+        out.append(clip(row, width))          # 超出寬度會折行，版面就歪了
     return out
 
 
@@ -711,7 +725,7 @@ def job_header(narrow):
             f"{T('nd'):>2} {T('cpu'):>4} {T('gpu'):>4}  {T('where')}")
 
 
-def slurm_section(width, max_rows=99, job_cols=1):
+def slurm_section(width, max_rows=99, job_cols=1, data=None):
     """回傳 (畫面行, 沒顯示到的 job 數)。job_cols>1 時佇列會排成多欄。"""
     inner = width - 2
     rows = []
@@ -722,7 +736,7 @@ def slurm_section(width, max_rows=99, job_cols=1):
         rows.append(V + pad(c, inner) + V)
 
     hidden = 0
-    raw = sh('squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l"').strip()
+    raw, info = data
     if not raw:
         line(dim("  " + T("no_jobs")))
     else:
@@ -742,7 +756,6 @@ def slurm_section(width, max_rows=99, job_cols=1):
         if hidden:
             line(dim("  " + T("hidden") % hidden))
 
-    info = sh('sinfo -h -N -o "%N|%T|%C|%e/%m"').strip()
     if info:
         line(dim(" " + "┈" * (inner - 2)))
         seen = set()
@@ -768,7 +781,12 @@ def render(nodes, show_proc=False, force_stack=False, fit=False):
     sparks = cols >= 118
     global _tick
     _tick += 1
-    snaps = [snapshot(n) for n in nodes]
+    with _cf.ThreadPoolExecutor(max_workers=max(2, len(nodes))) as pool:
+        snaps = list(pool.map(snapshot, nodes))       # 各節點同時抓，不要排隊等
+    with _cf.ThreadPoolExecutor(max_workers=2) as pool:
+        q = pool.submit(sh, 'squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l"')
+        i = pool.submit(sh, 'sinfo -h -N -o "%N|%T|%C|%e/%m"')
+        slurm_data = (q.result().strip(), i.result().strip())
 
     if not fit:
         # 預設：每張卡的明細與整個佇列都完整顯示，畫面長一點沒關係。
@@ -777,7 +795,8 @@ def render(nodes, show_proc=False, force_stack=False, fit=False):
             if jcols > 1 and cols < 46 * jcols:
                 break
             frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
-                              sparks, compact=False, job_cols=jcols)
+                              sparks, compact=False, job_cols=jcols,
+                              slurm_data=slurm_data)
             if len(frame) <= lines:
                 break
         return "\n".join(frame)
@@ -789,7 +808,7 @@ def render(nodes, show_proc=False, force_stack=False, fit=False):
         if jcols > 1 and cols < 46 * jcols:
             continue
         frame, hidden = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
-                               sp, compact, jcols)
+                               sp, compact, jcols, slurm_data=slurm_data)
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
@@ -808,7 +827,8 @@ def scope_section(width, height=6):
     return rows
 
 
-def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact, job_cols=1):
+def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
+           job_cols=1, slurm_data=("", "")):
     panel_w = 58 if sparks else 49
     panels = [node_panel(n, d, panel_w, show_proc, sparks, compact)
               for n, d in zip(nodes, snaps)]
@@ -829,7 +849,8 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact, j
 
     # 剩下的高度留給佇列：總高 - 已用 - Slurm 區塊固定開銷(6) - 頁尾(1) - 保險(1)
     budget = lines - len(out) - 8
-    sec, hidden = slurm_section(total_w, max_rows=max(1, budget), job_cols=job_cols)
+    sec, hidden = slurm_section(total_w, max_rows=max(1, budget), job_cols=job_cols,
+                                data=slurm_data)
     out += sec
     footer = "  " + T("footer")
     sign = dim(f"team-03/Hawks · v{__version__}")
