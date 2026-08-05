@@ -523,7 +523,7 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     rows = []
 
     def line(content):
-        rows.append(V + pad(content, inner) + V)
+        rows.append(V + pad(clip(content, inner), inner) + V)
 
     if not d or not d["gpus"]:
         title = f" {bold(node)} "
@@ -552,6 +552,8 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
             f"{dim(where.upper())} {dim(cyan('├'))}")
     right = (f" {busy}/{len(d['gpus'])} {T('busy')} {dim('·')} {vram_u:.0f}G {dim('·')} "
              f"{mag('%.1f kW' % (power / 1000))} {dim('·')} {tmax}°C ")
+    if vlen(left) + vlen(right) > inner:            # 窄視窗時右側資訊先讓位
+        right = clip(right, max(0, inner - vlen(left)))
     fill = max(0, inner - vlen(left) - vlen(right))
     edge = rgb(*heat(avg_util), H * fill)          # 邊框顏色跟著整台負載走
     rows.append(trace(TL + left + edge + right + TR, tick_offset=hash(node) % 7))
@@ -676,15 +678,26 @@ def qr_lines(quiet=2):
     return out
 
 
-QR_W = 33          # 29 個模組 + 左右各 2 格靜區
+QR_W = 35          # 29 個模組 + 左右各 2 格靜區 + 兩側外框
 
 
 def qr_panel(height):
-    """畫面右下角的 QR 區塊，寬度固定 QR_W。"""
-    rows = [dim(cyan("┤")) + " " + dim("SCAN") + " " + dim(cyan("├"))]
-    rows[0] = rows[0] + dim("─" * max(0, QR_W - vlen(rows[0])))
-    rows += qr_lines(quiet=2)
-    rows.append(dim(cyan(REPO_URL[8:][:QR_W])))       # 去掉 https:// 讓它塞得下
+    """右下角的 QR 區塊：外面包一層取景框，白底靜區完整保留才掃得到。"""
+    body = qr_lines(quiet=2)                       # 每列 33 格
+    inner = len(body[0].replace("\033[0m", "")) and 33
+
+    head = f"{dim(cyan('┤'))} {bold(cyan('SCAN'))} {dim(cyan('├'))}"
+    rows = [head + dim(cyan("─" * max(0, QR_W - vlen(head))))]
+
+    # 取景框：四角用括號，邊線暗青色，都在白色靜區之外，不影響掃描
+    rows.append(cyan("⌜") + dim(cyan("─" * inner)) + cyan("⌝"))
+    for line in body:
+        rows.append(dim(cyan("│")) + line + dim(cyan("│")))
+    rows.append(cyan("⌞") + dim(cyan("─" * inner)) + cyan("⌟"))
+
+    url = REPO_URL.split("//", 1)[1]               # 去掉 https:// 才置中得下
+    rows.append(pad("", max(0, (QR_W - len(url)) // 2)) + dim(cyan(url)))
+
     while len(rows) < height:
         rows.append("")
     return rows
@@ -781,7 +794,7 @@ def progress(elapsed, limit, width=8):
     return rgb(*col, full * filled) + grey(empty * (width - filled))
 
 
-def job_cell(f, narrow):
+def job_cell(f, narrow, where_w=20):
     """一個 job 的一列字串。narrow 用在多欄排版。"""
     jid, name, st, elapsed, left, nodes, cpus, gres, where = f[:9]
     limit = f[9] if len(f) > 9 else ""
@@ -795,11 +808,11 @@ def job_cell(f, narrow):
     if narrow:
         return (f" {bold('%7s' % jid[:7])} {name[:9]:<9} {pad(badge, 6)} "
                 f"{pad(fmt_dur(elapsed), 7)} {progress(elapsed, limit, 5)} "
-                f"{pad(fmt_dur(left), 7)}{gpu:>2} {cyan(where[:16])}")
+                f"{pad(fmt_dur(left), 7)}{gpu:>2} {cyan(where[:where_w])}")
     return (f"  {bold('%7s' % jid[:7])}  {name[:11]:<11} {pad(badge, 7)} "
             f"{pad(fmt_dur(elapsed), 9)} {progress(elapsed, limit)} "
             f"{pad(fmt_dur(left), 9)} "
-            f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:20])}")
+            f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:where_w])}")
 
 
 def job_header(narrow):
@@ -820,7 +833,7 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None):
     rows.append(trace(TL + title + H * max(0, inner - vlen(title)) + TR, 3))
 
     def line(c):
-        rows.append(V + pad(c, inner) + V)
+        rows.append(V + pad(clip(c, inner), inner) + V)
 
     hidden = 0
     raw, info = data
@@ -832,11 +845,13 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None):
         narrow = job_cols > 1
         colw = inner // job_cols
 
+        fixed = 46 if narrow else 75          # WHERE 之前所有欄位的固定寬度
+        where_w = max(4, colw - fixed)
         line(dim("".join(pad(clip(job_header(narrow), colw - 1), colw)
                              for _ in range(job_cols))))
         cap = max(job_cols, max_rows * job_cols)
         hidden = max(0, len(parsed) - cap)
-        cells = [job_cell(f, narrow) for f in parsed[:cap]]
+        cells = [job_cell(f, narrow, where_w) for f in parsed[:cap]]
         for i in range(0, len(cells), job_cols):
             group = cells[i:i + job_cols]
             line("".join(pad(clip(c, colw - 1), colw) for c in group))
@@ -886,6 +901,12 @@ def render(nodes, show_proc=False, force_stack=False, fit=False, want_qr=True):
                               slurm_data=slurm_data, want_qr=want_qr)
             if len(frame) <= lines:
                 break
+        spare = lines - len(frame) - 1          # 下面還空著就把示波器拉高
+        if spare > 0:
+            frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
+                              sparks, compact=False, job_cols=jcols,
+                              slurm_data=slurm_data, want_qr=want_qr,
+                              scope_h=6 + spare)
         return "\n".join(frame)
 
     # --fit：硬塞進一頁。依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄 -> 裁 job。
@@ -915,20 +936,25 @@ def scope_section(width, height=6):
     return rows
 
 
+MIN_PANEL_W = 49          # 一個節點面板至少要這麼寬才擺得下
+
+
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
-           job_cols=1, slurm_data=("", ""), want_qr=True):
-    panel_w = 58 if sparks else 49
+           job_cols=1, slurm_data=("", ""), want_qr=True, scope_h=6):
+    # 版面填滿整個終端機：先決定一排放幾個面板，再把寬度平均分掉，
+    # 而不是用固定寬度、右邊留一大塊空白。
+    total_w = max(MIN_PANEL_W, cols - 1)
+    percol = 1 if force_stack else max(1, min(len(nodes), total_w // MIN_PANEL_W))
+    panel_w = total_w // percol
+    total_w = panel_w * percol            # 對齊，避免右邊差一兩格
+    sparks = sparks and panel_w >= 58
+
     panels = [node_panel(n, d, panel_w, show_proc, sparks, compact)
               for n, d in zip(nodes, snaps)]
 
-    percol = max(1, cols // panel_w)
-    if force_stack:
-        percol = 1
-    total_w = panel_w * min(percol, max(1, len(panels)))
-
     out = cluster_header(snaps, total_w)
     if not compact:
-        out += scope_section(total_w)
+        out += scope_section(total_w, scope_h)
     for start in range(0, len(panels), percol):
         group = panels[start:start + percol]
         h = max(len(p) for p in group)
@@ -939,10 +965,25 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
     budget = lines - len(out) - 8
     show_qr_panel = want_qr and not _ascii and cols >= total_w and total_w - QR_W >= 60
     qw = QR_W + 2 if show_qr_panel else 0
-    sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget), job_cols=job_cols,
-                                data=slurm_data)
+    if show_qr_panel:
+        # QR 區塊固定 20 行高，佇列比它矮的話排多欄一行都省不到，
+        # 只會把欄位截斷。這種情況一律用單欄，看得清楚。
+        one, hidden_one = slurm_section(total_w - qw, max_rows=max(1, budget),
+                                        job_cols=1, data=slurm_data)
+        if len(one) <= len(qr_panel(0)) or job_cols == 1:
+            sec, hidden = one, hidden_one
+        else:
+            sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
+                                        job_cols=job_cols, data=slurm_data)
+    else:
+        sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
+                                    job_cols=job_cols, data=slurm_data)
     if show_qr_panel:
         qr = qr_panel(len(sec))
+        # QR 比佇列高的話，把佇列的框往下拉齊，不要在左邊留一塊空洞
+        if len(qr) > len(sec):
+            filler = V + " " * (total_w - qw - 2) + V
+            sec = sec[:-1] + [filler] * (len(qr) - len(sec)) + [sec[-1]]
         for i in range(max(len(sec), len(qr))):
             left = sec[i] if i < len(sec) else ""
             right = qr[i] if i < len(qr) else ""

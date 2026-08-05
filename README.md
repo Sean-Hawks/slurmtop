@@ -143,7 +143,10 @@ even if the result is taller than the window. If the queue is long, the job
 list splits into two or three columns to claw back some height, but jobs are
 never dropped.
 
-Panels sit side by side while they fit, and sparklines need ≥118 columns.
+The layout fills the terminal: node panels split the full width evenly rather
+than sitting at a fixed size with dead space to the right, the queue takes
+whatever is left beside the QR panel, and spare vertical space goes to the
+LOAD scope. Sparklines need panels at least 58 columns wide.
 
 If you would rather have a single screen that never scrolls, use `--fit`. That
 mode gives up detail in order — sparklines, then per-GPU rows collapsed to one
