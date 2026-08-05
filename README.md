@@ -44,6 +44,11 @@ hipac-team3  ▕██████████░░░░░░▏  65.4% · �
 
 </details>
 
+![node load zones](zone.png)
+
+*The whole panel is tinted by node load: n1 pegged and hot, n2 middling, idle
+nodes stay dark.*
+
 ## Why
 
 `nvtop` is great but shows one machine. `squeue` tells you what is queued but
@@ -116,6 +121,7 @@ rest are read over SSH, one round trip each per refresh.
 | seven-segment readout | cluster GPU utilisation, tinted by the value |
 | `◤ ◥` `┤ ├` | HUD chrome — section labels and frame ticks |
 | `◉` | per-node status LED, tinted by that node's load |
+| tinted panel background | the whole node zone warms up with its load — amber past 45 %, orange past 75 %, pulsing red past 90 % — so the node that is cooking is obvious without reading a single number |
 | moving bright cell in a bar | scan sweep, advances every refresh |
 | `≋ ≈ ~` next to a GPU | heat plume — the GPU is ≥70 °C or ≥95 % utilised |
 | breathing bars | anything pegged at ≥95 % pulses; so does a job within 15 % of its time limit |

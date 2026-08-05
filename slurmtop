@@ -299,6 +299,28 @@ def plume(temp, util):
     return rgb(*pulse(heat(100 if temp >= ALERT_TEMP else 88), 0.3), ch)
 
 
+def zone_bg(load):
+    """整個節點區塊的底色。負載越高越紅，讓人一眼看出是哪一台在燒。"""
+    if _ascii or not _color or load < 45:
+        return ""
+    if load < 75:
+        r, g, b = 26, 20, 6            # 微暖的琥珀
+    elif load < 90:
+        r, g, b = 40, 18, 6            # 橘
+    else:
+        r, g, b = 52, 12, 14           # 紅（滿載時再脈動一下）
+        f = 0.5 + 0.5 * math.cos(_tick * 0.9)
+        r, g, b = int(r + 22 * f), int(g + 4 * f), int(b + 6 * f)
+    return f"\033[48;2;{r};{g};{b}m"
+
+
+def tint(rows, bg):
+    """把底色套到整塊區域。行內每個 reset 之後要重新上底色，否則會斷掉。"""
+    if not bg:
+        return rows
+    return [bg + r.replace("\033[0m", "\033[0m" + bg) + "\033[0m" for r in rows]
+
+
 def blink(text, color, period=2):
     """警示閃爍：一半的時間亮，一半的時間暗。"""
     return rgb(*color, text) if _tick % (period * 2) < period else dim(text)
@@ -503,8 +525,8 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
         line(f" {bold('GPU')} {gradbar(avg_util)} {avg_util:5.1f}% "
              f"{dim('%d/%d %s' % (busy, len(d['gpus']), T('busy')))} "
              f"{dim('%.0f/%.0fG' % (vram_u, vram_t))}")
-        rows.append(BL + H * inner + BR)
-        return rows
+        rows.append(rgb(*heat(avg_util), BL + H * inner + BR))
+        return tint(rows, zone_bg(avg_util))
 
     for g in d["gpus"]:
         idx, util = g[0], float(g[1])
@@ -521,8 +543,8 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
         if len(d["procs"]) > 8:
             line(dim(f"   …還有 {len(d['procs']) - 8} 個"))
 
-    rows.append(BL + H * inner + BR)
-    return rows
+    rows.append(rgb(*heat(avg_util), BL + H * inner + BR))
+    return tint(rows, zone_bg(avg_util))
 
 
 EIGHTHS = " ▁▂▃▄▅▆▇█"
