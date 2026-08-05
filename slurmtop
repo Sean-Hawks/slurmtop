@@ -421,8 +421,9 @@ def job_cell(f, narrow):
         badge = grey(f"○ {st}")
     gpu = gres.replace("gres:gpu:", "").replace("N/A", "-")
     if narrow:
-        return (f" {bold('%7s' % jid[:7])} {name[:10]:<10} {pad(badge, 7)} "
-                f"{pad(fmt_dur(elapsed), 8)} {gpu:>3} {cyan(where[:24])}")
+        return (f" {bold('%7s' % jid[:7])} {name[:9]:<9} {pad(badge, 6)} "
+                f"{pad(fmt_dur(elapsed), 7)} {pad(fmt_dur(left), 7)}{gpu:>2} "
+                f"{cyan(where[:20])}")
     return (f"  {bold('%7s' % jid[:7])}  {name[:11]:<11} {pad(badge, 7)} "
             f"{pad(fmt_dur(elapsed), 9)} {pad(fmt_dur(left), 9)} "
             f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:22])}")
@@ -430,8 +431,8 @@ def job_cell(f, narrow):
 
 def job_header(narrow):
     if narrow:
-        return (f" {T('job'):>7} {T('name'):<10} {pad(T('state'), 7)} "
-                f"{pad(T('used'), 8)} {T('gpu'):>3} {T('where')}")
+        return (f" {T('job'):>7} {T('name'):<9} {pad(T('state'), 6)} "
+                f"{pad(T('used'), 7)} {pad(T('left'), 7)}{T('gpu'):>2} {T('where')}")
     return (f"  {T('job'):>7}  {T('name'):<11} {pad(T('state'), 7)} "
             f"{pad(T('used'), 9)} {pad(T('left'), 9)} "
             f"{T('nd'):>2} {T('cpu'):>4} {T('gpu'):>4}  {T('where')}")
