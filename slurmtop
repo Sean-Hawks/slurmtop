@@ -36,7 +36,7 @@ from collections import defaultdict, deque
 
 GPU_Q = "index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
 PROC_Q = "pid,used_gpu_memory,process_name"
-HIST = 24  # sparkline 保留幾筆歷史
+HIST = 240  # 歷史保留幾筆（sparkline 只取尾巴，示波器用全部）
 
 ANSI = re.compile(r"\033\[[0-9;?]*[a-zA-Z]")
 SPARK = "▁▂▃▄▅▆▇█"
@@ -487,7 +487,7 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
              f"{mag('%.1f kW' % (power / 1000))} {dim('·')} {tmax}°C ")
     fill = max(0, inner - vlen(left) - vlen(right))
     edge = rgb(*heat(avg_util), H * fill)          # 邊框顏色跟著整台負載走
-    rows.append(TL + left + edge + right + TR)
+    rows.append(trace(TL + left + edge + right + TR, tick_offset=hash(node) % 7))
 
     sp = (" " + spark(_hist[(node, "cpu")], 8)) if sparks else ""
     ld = d["load"]
@@ -523,6 +523,57 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
 
     rows.append(BL + H * inner + BR)
     return rows
+
+
+EIGHTHS = " ▁▂▃▄▅▆▇█"
+
+
+def scope(vals, width, height=6):
+    """示波器：像心電圖一樣循環掃描，寫入頭在畫面上跑，舊資料留在右邊。
+
+    每格用八分之一方塊做次像素解析度，所以 6 行能表現 48 級。
+    """
+    v = list(vals)
+    slots = [None] * width
+    for i, x in enumerate(v):
+        slots[i % width] = x
+    head = (len(v) - 1) % width if v else -1
+
+    rows = []
+    for r in range(height):
+        base = (height - 1 - r) * 8            # 這行代表的底部高度（單位：八分之一格）
+        line = []
+        for i, x in enumerate(slots):
+            if x is None:                      # 還沒掃到的區域
+                line.append(grey("." if _ascii else "·"))
+                continue
+            level = max(0.0, min(100.0, x)) / 100 * height * 8
+            f = level - base
+            if f <= 0:
+                ch, col = ("." if _ascii else "·"), None
+            elif f >= 8:
+                ch, col = ("#" if _ascii else "█"), heat(x)
+            else:
+                ch, col = ("+" if _ascii else EIGHTHS[int(f)]), heat(x)
+            if i == head:                      # 寫入頭：整欄提亮
+                line.append(rgb(150, 245, 255, ch if ch != "·" else ("|" if _ascii else "│")))
+            elif col is None:
+                line.append(grey(ch))
+            else:
+                line.append(rgb(*col, ch))
+        rows.append("".join(line))
+    return rows
+
+
+def trace(border, tick_offset=0):
+    """讓一顆亮點沿著邊框跑，像電路上的訊號。"""
+    if _ascii or vlen(border) < 8:
+        return border
+    plain = ANSI.sub("", border)
+    idx = 2 + (_tick * 2 + tick_offset) % max(1, len(plain) - 4)
+    if plain[idx] not in "─═┈":
+        return border
+    return border[:idx] + rgb(120, 240, 255, "━") + border[idx + 1:]
 
 
 def splash(nodes):
@@ -643,7 +694,7 @@ def slurm_section(width, max_rows=99, job_cols=1):
     inner = width - 2
     rows = []
     title = f"{dim(cyan('┤'))} {bold(T('queue'))} {dim(cyan('├'))}"
-    rows.append(TL + title + H * max(0, inner - vlen(title)) + TR)
+    rows.append(trace(TL + title + H * max(0, inner - vlen(title)) + TR, 3))
 
     def line(c):
         rows.append(V + pad(c, inner) + V)
@@ -722,6 +773,19 @@ def render(nodes, show_proc=False, force_stack=False, fit=False):
     return "\n".join(frame[:lines])
 
 
+def scope_section(width, height=6):
+    """全叢集負載示波器。"""
+    inner = width - 2
+    n = len(_hist[("all", "gpu")])
+    title = (f"{dim(cyan('┤'))} {bold('LOAD')} {dim('//')} "
+             f"{dim('last %d samples' % min(n, inner - 2))} {dim(cyan('├'))}")
+    rows = [trace(TL + title + H * max(0, inner - vlen(title)) + TR)]
+    for line in scope(_hist[("all", "gpu")], inner - 2, height):
+        rows.append(V + " " + pad(line, inner - 2) + " " + V)
+    rows.append(BL + H * inner + BR)
+    return rows
+
+
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact, job_cols=1):
     panel_w = 58 if sparks else 49
     panels = [node_panel(n, d, panel_w, show_proc, sparks, compact)
@@ -733,6 +797,8 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact, j
     total_w = panel_w * min(percol, max(1, len(panels)))
 
     out = cluster_header(snaps, total_w)
+    if not compact:
+        out += scope_section(total_w)
     for start in range(0, len(panels), percol):
         group = panels[start:start + percol]
         h = max(len(p) for p in group)

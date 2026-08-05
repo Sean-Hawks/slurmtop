@@ -121,6 +121,8 @@ rest are read over SSH, one round trip each per refresh.
 | breathing bars | anything pegged at ≥95 % pulses; so does a job within 15 % of its time limit |
 | `◆ FULL LOAD` | cluster mean utilisation ≥90 %, blinking |
 | `▲ THERMAL` | hottest GPU ≥78 °C, blinking |
+| LOAD panel | cluster utilisation on a sweeping scope — data is written in a circle like an EKG, the bright column is the write head, and each cell uses eighth-blocks so six rows resolve 48 levels |
+| bright cell running along a border | signal trace, one per panel at different phases |
 | `GPUs ▉▉▁▁▁▁▁▁ │ ▉▉▉▉▉▉▉▉` | one cell per GPU in the cluster, grouped by node — the whole fleet at a glance |
 | `◓ run` / `◌ pend` | Slurm job state; the running marker spins on every refresh |
 | `PROG ███░░░░░` | how much of the job's time limit is used up — turns red as it approaches the wall |
