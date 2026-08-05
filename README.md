@@ -7,6 +7,14 @@ sparkline history, in a single 24-line frame.
 Built during [HiPAC 2026](https://www.nchc.org.tw/) because `watch nvidia-smi`
 on each node in a separate tmux pane got old fast.
 
+![slurmtop in action](demo.gif)
+
+*Real capture from a 2-node / 16×H200 cluster. Watch the sparklines fill in as
+jobs start and the queue drain as they finish.*
+
+<details>
+<summary>Same thing as text</summary>
+
 ```
 hipac-team3  ▕█░░░░░░░░░░░░░░░▏   6.2% ▁▁▁▁▁▁▁▁▁▁  1/16 GPUs · 187/2246G · 2.40 kW · 49°C                   06:10:12
 ╭ n1 local ────────────── 0/8 busy · 58G · 1.1 kW · 39°C ╮╭ n2 ssh ─────────────── 1/8 busy · 129G · 1.3 kW · 49°C ╮
@@ -34,8 +42,7 @@ hipac-team3  ▕█░░░░░░░░░░░░░░░▏   6.2% ▁�
   Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval
 ```
 
-*Live capture from a 2-node / 16×H200 cluster (colour stripped for the
-README). One GPU busy, a Quantum ESPRESSO job holding the other node.*
+</details>
 
 ## Why
 
