@@ -663,11 +663,13 @@ def trace(border, tick_offset=0):
 REPO_URL = "https://github.com/Sean-Hawks/slurmtop"
 
 
-def qr_lines(quiet=2):
+def qr_lines(quiet=4):
     """把內嵌的 QR 畫成可掃描的文字。
 
-    一個字元格用上下兩個模組（▀ 的前景是上、背景是下），這樣模組才會是正方形；
-    亮暗直接指定黑白，不受終端機配色影響，手機才掃得到。
+    一個模組 = 兩個字元寬 x 一列高，靠背景色塗黑白。之前用半形方塊（一個字元
+    寬、上下兩個模組）雖然省一半寬度，但模組是不是正方形要看終端機的字元長寬
+    比，實測解碼時好時壞。這種畫法在一般 1:2 的字元格下模組就是正方形，實測
+    靜區 2/3/4 都解得出來。靜區用規範建議的 4 模組。
     """
     grid = []
     for r in QR_ROWS:
@@ -677,29 +679,21 @@ def qr_lines(quiet=2):
     grid = [list(pad_row) for _ in range(quiet)] + grid + \
            [list(pad_row) for _ in range(quiet)]
 
-    if _ascii:                                   # 沒有半形方塊時退回兩個字元寬
-        return ["".join("  " if not c else "██" for c in row) for row in grid]
+    if _ascii:
+        return ["".join("██" if c else "  " for c in row) for row in grid]
 
-    out = []
-    for y in range(0, len(grid), 2):
-        line = ""
-        for x in range(len(grid[0])):
-            top = grid[y][x]
-            bot = grid[y + 1][x] if y + 1 < len(grid) else 0
-            fg = "0;0;0" if top else "255;255;255"
-            bg = "0;0;0" if bot else "255;255;255"
-            line += f"\033[38;2;{fg}m\033[48;2;{bg}m▀"
-        out.append(line + "\033[0m")
-    return out
+    dark, light = "\033[48;2;0;0;0m  ", "\033[48;2;255;255;255m  "
+    return ["".join(dark if c else light for c in row) + "\033[0m" for row in grid]
 
 
-QR_W = 35          # 29 個模組 + 左右各 2 格靜區 + 兩側外框
+QR_QUIET = 4
+QR_W = (QR_SIZE + QR_QUIET * 2) * 2 + 2   # 模組兩字元寬 + 兩側外框
 
 
 def qr_panel(height):
     """右下角的 QR 區塊：外面包一層取景框，白底靜區完整保留才掃得到。"""
-    body = qr_lines(quiet=2)                       # 每列 33 格
-    inner = len(body[0].replace("\033[0m", "")) and 33
+    body = qr_lines(QR_QUIET)
+    inner = (QR_SIZE + QR_QUIET * 2) * 2
 
     head = f"{dim(cyan('┤'))} {bold(cyan('SCAN'))} {dim(cyan('├'))}"
     rows = [head + dim(cyan("─" * max(0, QR_W - vlen(head))))]
@@ -978,7 +972,7 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
 
     # 剩下的高度留給佇列：總高 - 已用 - Slurm 區塊固定開銷(6) - 頁尾(1) - 保險(1)
     budget = lines - len(out) - 8
-    show_qr_panel = want_qr and not _ascii and cols >= total_w and total_w - QR_W >= 60
+    show_qr_panel = want_qr and not _ascii and cols >= total_w and total_w - QR_W >= 80
     qw = QR_W + 2 if show_qr_panel else 0
     if show_qr_panel:
         # QR 區塊固定 20 行高，佇列比它矮的話排多欄一行都省不到，
@@ -1041,7 +1035,7 @@ def main():
     ap.add_argument("--qr", action="store_true",
                     help="print only the QR code for the project repo and exit")
     ap.add_argument("--no-qr", action="store_true",
-                    help="hide the QR panel in the dashboard (shown by default)")
+                    help="hide the QR panel (shown when the terminal is wide enough)")
     ap.add_argument("--ascii", action="store_true",
                     help="ASCII bars/sparklines for fonts without block glyphs")
     ap.add_argument("--lang", choices=sorted(STRINGS), help="ui language (default: auto)")
