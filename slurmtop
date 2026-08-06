@@ -663,13 +663,15 @@ def trace(border, tick_offset=0):
 REPO_URL = "https://github.com/Sean-Hawks/slurmtop"
 
 
-def qr_lines(quiet=4):
+def qr_lines(quiet=4, wide=False):
     """把內嵌的 QR 畫成可掃描的文字。
 
-    一個模組 = 兩個字元寬 x 一列高，靠背景色塗黑白。之前用半形方塊（一個字元
-    寬、上下兩個模組）雖然省一半寬度，但模組是不是正方形要看終端機的字元長寬
-    比，實測解碼時好時壞。這種畫法在一般 1:2 的字元格下模組就是正方形，實測
-    靜區 2/3/4 都解得出來。靜區用規範建議的 4 模組。
+    預設用半形方塊：一個字元格放上下兩個模組（前景畫上面、背景畫下面），
+    模組是 1 格寬 x 半格高。一般終端機的字元格約 1:2，所以模組接近正方形；
+    實測長寬比 1.8~2.4 之間都解得出來。這也是 `qrencode -t ANSIUTF8` 的做法。
+
+    wide=True 改成一個模組兩個字元寬、一列高，只用背景色，完全不依賴
+    方塊字符的字型覆蓋範圍。寬度變兩倍，給字型會讓 ▀ 留縫的終端機用。
     """
     grid = []
     for r in QR_ROWS:
@@ -679,21 +681,34 @@ def qr_lines(quiet=4):
     grid = [list(pad_row) for _ in range(quiet)] + grid + \
            [list(pad_row) for _ in range(quiet)]
 
-    if _ascii:
-        return ["".join("██" if c else "  " for c in row) for row in grid]
+    if wide or _ascii:
+        if _ascii:
+            return ["".join("██" if c else "  " for c in row) for row in grid]
+        dark, light = "\033[48;2;0;0;0m  ", "\033[48;2;255;255;255m  "
+        return ["".join(dark if c else light for c in row) + "\033[0m"
+                for row in grid]
 
-    dark, light = "\033[48;2;0;0;0m  ", "\033[48;2;255;255;255m  "
-    return ["".join(dark if c else light for c in row) + "\033[0m" for row in grid]
+    if len(grid) % 2:                              # 補成偶數列才好兩兩配對
+        grid.append(list(pad_row))
+    out = []
+    for y in range(0, len(grid), 2):
+        line = ""
+        for x in range(len(grid[0])):
+            fg = "0;0;0" if grid[y][x] else "255;255;255"
+            bg = "0;0;0" if grid[y + 1][x] else "255;255;255"
+            line += f"\033[38;2;{fg}m\033[48;2;{bg}m▀"
+        out.append(line + "\033[0m")
+    return out
 
 
 QR_QUIET = 4
-QR_W = (QR_SIZE + QR_QUIET * 2) * 2 + 2   # 模組兩字元寬 + 兩側外框
+QR_W = QR_SIZE + QR_QUIET * 2 + 2         # 半形方塊：一模組一欄 + 兩側外框
 
 
 def qr_panel(height):
     """右下角的 QR 區塊：外面包一層取景框，白底靜區完整保留才掃得到。"""
     body = qr_lines(QR_QUIET)
-    inner = (QR_SIZE + QR_QUIET * 2) * 2
+    inner = QR_SIZE + QR_QUIET * 2
 
     head = f"{dim(cyan('┤'))} {bold(cyan('SCAN'))} {dim(cyan('├'))}"
     rows = [head + dim(cyan("─" * max(0, QR_W - vlen(head))))]
@@ -712,9 +727,9 @@ def qr_panel(height):
     return rows
 
 
-def show_qr():
+def show_qr(wide=False):
     print()
-    for line in qr_lines():
+    for line in qr_lines(QR_QUIET, wide):
         print("  " + line)
     print()
     print("  " + bold(cyan(REPO_URL)))
@@ -972,7 +987,7 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
 
     # 剩下的高度留給佇列：總高 - 已用 - Slurm 區塊固定開銷(6) - 頁尾(1) - 保險(1)
     budget = lines - len(out) - 8
-    show_qr_panel = want_qr and not _ascii and cols >= total_w and total_w - QR_W >= 80
+    show_qr_panel = want_qr and not _ascii and cols >= total_w and total_w - QR_W >= 72
     qw = QR_W + 2 if show_qr_panel else 0
     if show_qr_panel:
         # QR 區塊固定 20 行高，佇列比它矮的話排多欄一行都省不到，
@@ -1034,6 +1049,9 @@ def main():
     ap.add_argument("--no-splash", action="store_true", help="skip the boot animation")
     ap.add_argument("--qr", action="store_true",
                     help="print only the QR code for the project repo and exit")
+    ap.add_argument("--qr-wide", action="store_true",
+                    help="draw QR modules two characters wide (for fonts where "
+                         "half-blocks leave gaps)")
     ap.add_argument("--no-qr", action="store_true",
                     help="hide the QR panel (shown when the terminal is wide enough)")
     ap.add_argument("--ascii", action="store_true",
@@ -1054,7 +1072,7 @@ def main():
     _title = args.title or cluster_name()
 
     if args.qr:
-        show_qr()
+        show_qr(args.qr_wide)
         return
 
     nodes = [n.strip() for n in args.nodes.split(",") if n.strip()] if args.nodes \
