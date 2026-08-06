@@ -114,10 +114,21 @@ over SSH. Installing it on every node is optional but handy.
 Requirements:
 
 - Python 3.8+ on the machine you run it from
-- `nvidia-smi` on each node
+- Linux or macOS on each node
 - passwordless SSH from that machine to every remote node
-- Slurm (optional — used for node discovery and the queue panel; without it
-  pass `--nodes` and the queue section is simply empty)
+
+Everything else is optional and degrades cleanly:
+
+| Missing | What happens |
+|---|---|
+| `nvidia-smi` / no GPU | node panels show CPU and RAM only, and the header switches its main gauge to CPU |
+| Slurm | pass `--nodes`; the queue panel just says there are no jobs |
+| a second machine | `slurmtop --nodes localhost` watches the box you are on, no SSH involved |
+
+CPU and memory are read from `/proc` on Linux and from `sysctl` / `vm_stat` /
+`top` on macOS, so a laptop works as a node like anything else. Only NVIDIA
+GPUs are read; AMD and Intel are not supported yet — the coupling is one
+`nvidia-smi` call in `REMOTE`, so a patch adding `rocm-smi` would be small.
 
 ## Usage
 
@@ -126,6 +137,7 @@ slurmtop                    # refresh every 2s, nodes discovered from Slurm
 slurmtop -n 5               # refresh every 5s
 slurmtop --once             # print one frame and exit (good for chat/logs)
 slurmtop --nodes a,b,c      # explicit node list, skip Slurm discovery
+slurmtop --nodes localhost  # single machine, no SSH, no Slurm needed
 slurmtop --proc             # also list the processes on each GPU
 slurmtop --stack            # force vertical layout
 slurmtop --fit              # squeeze into one screen instead of showing everything

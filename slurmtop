@@ -67,7 +67,7 @@ STRINGS = {
         "unreachable": "unreachable / nvidia-smi not responding",
         "hidden": "%d more job(s) hidden - run squeue for the full list",
         "footer": "Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval",
-        "gpus": "GPUs", "local": "local", "remote": "ssh", "prog": "PROG",
+        "gpus": "GPUs", "local": "local", "remote": "ssh", "prog": "PROG", "threads": "threads", "no_gpu": "no GPU",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -77,7 +77,7 @@ STRINGS = {
         "unreachable": "連不上或 nvidia-smi 無回應",
         "hidden": "…還有 %d 個 job 未顯示（用 squeue 看完整清單）",
         "footer": "Ctrl-C 離開  ·  --proc 看行程  ·  --stack 上下排列  ·  -n <秒> 改間隔",
-        "gpus": "張", "local": "本機", "remote": "ssh", "prog": "進度",
+        "gpus": "張", "local": "本機", "remote": "ssh", "prog": "進度", "threads": "執行緒", "no_gpu": "無 GPU",
     },
 }
 
@@ -441,6 +441,8 @@ _hostmap = None
 
 
 def is_local(node):
+    if node in ("localhost", "127.0.0.1", "::1"):   # 單機模式，別繞 SSH
+        return True
     global _hostmap
     if _hostmap is None:
         _hostmap = node_hostnames()
@@ -448,17 +450,43 @@ def is_local(node):
     return node == h or _hostmap.get(node, node) == h
 
 
+# 遠端只跑 POSIX shell 能做的事，並依作業系統分支。輸出格式固定五段，
+# 讓解析端不必知道對方是什麼系統。沒有 GPU 的機器第四、五段就是空的。
 REMOTE = f"""
-head -1 /proc/stat
+if [ -r /proc/stat ]; then
+  head -1 /proc/stat
+else
+  idle=$(top -l 1 -n 0 2>/dev/null | sed -n 's/^CPU usage:.*, \\([0-9.]*\\)% idle.*/\\1/p')
+  echo "PCT $(awk -v i="${{idle:-100}}" 'BEGIN{{printf "%.1f", 100 - i}}')"
+fi
 echo '@@'
-cat /proc/loadavg; nproc
+if [ -r /proc/loadavg ]; then
+  cut -d' ' -f1-3 /proc/loadavg
+  nproc
+else
+  sysctl -n vm.loadavg 2>/dev/null | tr -d '{{}}'
+  sysctl -n hw.ncpu 2>/dev/null || echo 0
+fi
 echo '@@'
-free -m | awk '/^Mem:/{{print $2, $3}}'
+if command -v free >/dev/null 2>&1; then
+  free -m | awk '/^Mem:/{{print $2, $3}}'
+elif command -v vm_stat >/dev/null 2>&1; then
+  tot=$(( $(sysctl -n hw.memsize) / 1048576 ))
+  vm_stat | awk -v ps="$(sysctl -n hw.pagesize)" -v tot="$tot" '
+    /Pages free/ {{f=$3}} /Pages inactive/ {{i=$3}} /Pages speculative/ {{s=$3}}
+    END {{gsub(/\\./,"",f); gsub(/\\./,"",i); gsub(/\\./,"",s)
+         printf "%d %d\\n", tot, tot - (f+i+s)*ps/1048576}}'
+else
+  echo "0 0"
+fi
 echo '@@'
-nvidia-smi --query-gpu={GPU_Q} --format=csv,noheader,nounits
+command -v nvidia-smi >/dev/null 2>&1 && \
+  nvidia-smi --query-gpu={GPU_Q} --format=csv,noheader,nounits 2>/dev/null
 echo '@@'
-nvidia-smi --query-compute-apps={PROC_Q} --format=csv,noheader,nounits 2>/dev/null
+command -v nvidia-smi >/dev/null 2>&1 && \
+  nvidia-smi --query-compute-apps={PROC_Q} --format=csv,noheader,nounits 2>/dev/null
 """
+
 
 
 def run_script(node, script, timeout=20):
@@ -485,7 +513,11 @@ def snapshot(node):
     d = {}
     # CPU% 用跟上一次重畫的累積值差算，不必在遠端 sleep 取樣
     try:
-        cur = list(map(int, parts[0].splitlines()[0].split()[1:]))
+        first = parts[0].splitlines()[0]
+        if first.startswith("PCT"):           # 非 Linux：對方已經算好百分比
+            d["cpu_pct"] = max(0.0, min(100.0, float(first.split()[1])))
+            raise StopIteration
+        cur = list(map(int, first.split()[1:]))
         prev = _cpu_prev.get(node)
         _cpu_prev[node] = cur
         if prev and len(prev) == len(cur):
@@ -494,8 +526,10 @@ def snapshot(node):
             d["cpu_pct"] = max(0.0, min(100.0, 100.0 * (tot_d - idle_d) / tot_d)) if tot_d else 0.0
         else:
             d["cpu_pct"] = 0.0
+    except StopIteration:
+        pass
     except Exception:
-        d["cpu_pct"] = 0.0
+        d.setdefault("cpu_pct", 0.0)
     try:
         lines = parts[1].splitlines()
         d["load"] = [float(x) for x in lines[0].split()[:3]]
@@ -525,20 +559,23 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     def line(content):
         rows.append(V + pad(clip(content, inner), inner) + V)
 
-    if not d or not d["gpus"]:
+    if not d:
         title = f" {bold(node)} "
         rows.append(TL + H * 2 + title + H * max(0, inner - vlen(title) - 2) + TR)
         line("  " + rgb(231, 76, 60, T("unreachable")))
         rows.append(BL + H * inner + BR)
         return rows
 
+    # 沒有 GPU 的機器（CPU-only 節點、開發用筆電）照樣顯示 CPU/RAM，
+    # 整台的「熱度」就改用 CPU 使用率當指標。
+    has_gpu = bool(d["gpus"])
     utils = [float(g[1]) for g in d["gpus"]]
-    avg_util = sum(utils) / len(utils)
-    vram_u = sum(float(g[2]) for g in d["gpus"]) / 1024
-    vram_t = sum(float(g[3]) for g in d["gpus"]) / 1024
-    power = sum(float(g[5]) for g in d["gpus"])
+    avg_util = (sum(utils) / len(utils)) if has_gpu else d["cpu_pct"]
+    vram_u = sum(float(g[2]) for g in d["gpus"]) / 1024 if has_gpu else 0
+    vram_t = sum(float(g[3]) for g in d["gpus"]) / 1024 if has_gpu else 0
+    power = sum(float(g[5]) for g in d["gpus"]) if has_gpu else 0
     busy = sum(1 for u in utils if u > 5)
-    tmax = max(int(float(g[4])) for g in d["gpus"])
+    tmax = max((int(float(g[4])) for g in d["gpus"]), default=0)
     mem_pct = d["mem_used"] / d["mem_total"] * 100 if d["mem_total"] else 0
 
     _hist[(node, "cpu")].append(d["cpu_pct"])
@@ -550,8 +587,11 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     led = (blink(dot, heat(avg_util)) if avg_util >= 90 else rgb(*heat(avg_util), dot))
     left = (f"{dim(cyan('┤'))} {dim('NODE')} {bold(cyan(node))} {led} "
             f"{dim(where.upper())} {dim(cyan('├'))}")
-    right = (f" {busy}/{len(d['gpus'])} {T('busy')} {dim('·')} {vram_u:.0f}G {dim('·')} "
-             f"{mag('%.1f kW' % (power / 1000))} {dim('·')} {tmax}°C ")
+    if has_gpu:
+        right = (f" {busy}/{len(d['gpus'])} {T('busy')} {dim('·')} {vram_u:.0f}G {dim('·')} "
+                 f"{mag('%.1f kW' % (power / 1000))} {dim('·')} {tmax}°C ")
+    else:
+        right = f" {d['ncpu']} {T('threads')} {dim('·')} {T('no_gpu')} "
     if vlen(left) + vlen(right) > inner:            # 窄視窗時右側資訊先讓位
         right = clip(right, max(0, inner - vlen(left)))
     fill = max(0, inner - vlen(left) - vlen(right))
@@ -764,11 +804,46 @@ def splash(nodes):
         time.sleep(0.07)
 
 
+def cpu_header(live, width):
+    """沒有任何 GPU 時的總覽列：主指標換成 CPU。"""
+    avg = sum(d["cpu_pct"] for d in live) / len(live)
+    cores = sum(d["ncpu"] for d in live)
+    mem_u = sum(d["mem_used"] for d in live) / 1024
+    mem_t = sum(d["mem_total"] for d in live) / 1024
+    _hist[("all", "gpu")].append(avg)              # 沿用同一條歷史，示波器照畫
+
+    tag = f" {bold(cyan('SLURMTOP'))} {dim('//')} {bold(_title)} "
+    clock = f" {dim(time.strftime('%H:%M:%S'))} "
+    fill = max(0, width - vlen(tag) - vlen(clock) - 2)
+    out = [cyan("◤") + tag + dim("─" * fill) + clock + cyan("◥")]
+
+    lab = lambda t: dim(cyan(f"{t:<5}"))
+    gauge = [
+        "  " + arc_gauge(avg),
+        "  " + pad(f"{bold('%.1f%%' % avg)} {dim(cyan('CPU'))}", 17),
+        "  " + pad(f"{trend(('all', 'gpu'), avg)} {spark(_hist[('all', 'gpu')], 12)}", 17),
+    ]
+    tele = [
+        f"{lab('CORE')} {bold(str(len(live)))} {dim('nodes')} {dim('·')} "
+        f"{cores} {dim(T('threads'))}",
+        f"{lab('CPU')}  {gradbar(avg, 18, avg >= 90)} {bold('%5.1f%%' % avg)} "
+        f"{trend(('all', 'gpu'), avg)}  {spark(_hist[('all', 'gpu')], 12)}",
+        f"{lab('MEM')}  {mem_u:.0f}{dim('/')}{mem_t:.0f} GiB   {dim(T('no_gpu'))}",
+    ]
+    for i in range(max(len(gauge), len(tele))):
+        left = gauge[i] if i < len(gauge) else ""
+        out.append(pad(left, 20) + (tele[i] if i < len(tele) else ""))
+    return out
+
+
 def cluster_header(snaps, width):
     """HUD 主讀數：七段大字 + 遙測列 + 全叢集 GPU 格點圖。"""
-    gpus = [g for d in snaps if d for g in d["gpus"]]
-    if not gpus:
+    live = [d for d in snaps if d]
+    gpus = [g for d in live for g in d["gpus"]]
+    if not live:
         return [rgb(231, 76, 60, "NO TELEMETRY")]
+    if not gpus:                                   # CPU-only 叢集
+        return cpu_header(live, width)
     utils = [float(g[1]) for g in gpus]
     avg = sum(utils) / len(utils)
     busy = sum(1 for u in utils if u > 5)
