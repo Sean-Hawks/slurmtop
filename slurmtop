@@ -642,7 +642,22 @@ def trace(border, tick_offset=0):
     idx = 2 + (_tick * 2 + tick_offset) % max(1, len(plain) - 4)
     if plain[idx] not in "─═┈":
         return border
-    return border[:idx] + rgb(120, 240, 255, "━") + border[idx + 1:]
+
+    # 要在「原字串」裡找到第 idx 個可見字元的位置。直接拿 plain 的索引去切
+    # 原字串會切進 ANSI 序列中間，把顏色碼截斷成亂碼。
+    raw, seen = 0, 0
+    while raw < len(border):
+        if border[raw] == "\033":
+            end = border.find("m", raw)
+            if end == -1:
+                break
+            raw = end + 1
+            continue
+        if seen == idx:
+            return border[:raw] + rgb(120, 240, 255, "━") + border[raw + 1:]
+        seen += 1
+        raw += 1
+    return border
 
 
 REPO_URL = "https://github.com/Sean-Hawks/slurmtop"
