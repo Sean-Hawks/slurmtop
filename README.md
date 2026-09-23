@@ -14,10 +14,12 @@ is simulated — same render path, synthetic telemetry — because the cluster w
 powered down when this was recorded. Everything you see is what the real thing
 draws: the scope filling, both node zones going red, heat plumes at 70 °C,
 `FULL LOAD` lighting up, and the progress bars creeping toward each job's
-time limit.*
+time limit. The recording was made with `--flair --qr-panel`; by default the
+dashboard holds still — no plumes, sweeps, blinking or QR panel — see
+[Animations](#animations).*
 
 <details>
-<summary>Same thing as text</summary>
+<summary>Same thing as text (<code>--flair --qr-panel</code>, before the USER column)</summary>
 
 ```
 ◤ SLURMTOP // hipac-team3 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────── 11:56:32 ◥
@@ -142,9 +144,11 @@ slurmtop --proc             # also list the processes on each GPU
 slurmtop --stack            # force vertical layout
 slurmtop --fit              # squeeze into one screen instead of showing everything
 slurmtop --no-color         # plain text
-slurmtop --no-splash        # skip the boot animation
+slurmtop --flair            # turn on every animation, plus the boot splash
+slurmtop --no-splash        # with --flair, skip just the boot animation
+slurmtop --node-timeout 3   # wait at most 3s per node per refresh (default 6)
 slurmtop --qr               # print only the QR code and exit
-slurmtop --no-qr            # hide the QR panel in the dashboard (on by default)
+slurmtop --qr-panel         # show the QR panel beside the queue (off by default)
 slurmtop --qr-wide          # double-width QR modules, for fonts with gappy blocks
 slurmtop --ascii            # ASCII bars, for fonts without block glyphs
 slurmtop --lang zh          # 繁體中文介面（預設依 $LANG 自動判斷）
@@ -164,20 +168,34 @@ rest are read over SSH, one round trip each per refresh.
 | arc gauge | cluster GPU utilisation — the dome fills left to right and is tinted by the value, so both shape and colour carry the reading |
 | `◤ ◥` `┤ ├` | HUD chrome — section labels and frame ticks |
 | `◉` | per-node status LED, tinted by that node's load |
-| tinted panel background | the whole node zone warms up with its load — amber past 45 %, orange past 75 %, pulsing red past 90 % — so the node that is cooking is obvious without reading a single number |
-| moving bright cell in a bar | scan sweep, advances every refresh |
-| `≋ ≈ ~` next to a GPU | heat plume — the GPU is ≥70 °C or ≥95 % utilised |
-| breathing bars | anything pegged at ≥95 % pulses; so does a job within 15 % of its time limit |
-| `◆ FULL LOAD` | cluster mean utilisation ≥90 %, blinking |
-| `▲ THERMAL` | hottest GPU ≥78 °C, blinking |
+| tinted panel background | the whole node zone warms up with its load — amber past 45 %, orange past 75 %, red past 90 % — so the node that is cooking is obvious without reading a single number |
+| `◆ FULL LOAD` | cluster mean utilisation ≥90 % |
+| `▲ THERMAL` | hottest GPU ≥78 °C |
 | LOAD panel | cluster utilisation on a sweeping scope — data is written in a circle like an EKG, the bright column is the write head, and each cell uses eighth-blocks so six rows resolve 48 levels |
-| bright cell running along a border | signal trace, one per panel at different phases |
-| `GPUs ▉▉▁▁▁▁▁▁ │ ▉▉▉▉▉▉▉▉` | one cell per GPU in the cluster, grouped by node — the whole fleet at a glance |
-| `◓ run` / `◌ pend` | Slurm job state; the running marker spins on every refresh |
+| `GPUs ▉▉▁▁▁▁▁▁ │ ▉▉▉▉▉▉▉▉` | one cell per GPU in the cluster, grouped by node — the whole fleet at a glance; `-` is a GPU whose utilisation cannot be read (MIG) |
+| `-` in a GPU row | nvidia-smi reported `[N/A]` or nothing for that field |
+| `stale 12s` in a node title | that node missed the refresh deadline (`--node-timeout`); its last reading is shown until it answers again, for up to a minute, after which it is shown as unreachable |
+| `● run` / `◌ pend` | Slurm job state |
+| `USER` | who submitted the job |
 | `PROG ███░░░░░` | how much of the job's time limit is used up — turns red as it approaches the wall |
 | `2h45m`, `20m00s`, `3d02h` | durations, always with units |
 | header line | cluster totals: mean GPU utilisation, busy GPU count, VRAM, power draw, hottest GPU |
 | panel border | tinted by that node's average GPU load |
+
+### Animations
+
+By default nothing on screen moves unless the data does. `--flair` turns on
+the decorative effects all at once:
+
+| Effect | What it shows |
+|---|---|
+| moving bright cell in a bar | scan sweep, advances every refresh |
+| `≋ ≈ ~` next to a GPU | heat plume — the GPU is ≥70 °C or ≥95 % utilised |
+| breathing bars | anything pegged at ≥95 % pulses; so does a job within 15 % of its time limit, and a node zone past 90 % |
+| blinking `FULL LOAD` / `THERMAL` | the same alerts, blinking |
+| bright cell running along a border | signal trace, one per panel at different phases |
+| `◐◓◑◒ run` | the running-job marker spins on every refresh |
+| boot splash | a short start-up animation (`--no-splash` skips just this) |
 
 By default nothing is hidden: every GPU row and every queued job is printed,
 even if the result is taller than the window. If the queue is long, the job
@@ -186,8 +204,8 @@ never dropped.
 
 The layout fills the terminal: node panels split the full width evenly rather
 than sitting at a fixed size with dead space to the right, the queue takes
-whatever is left beside the QR panel, and spare vertical space goes to the
-LOAD scope. Sparklines need panels at least 58 columns wide.
+the full width (or whatever is left beside the QR panel with `--qr-panel`),
+and spare vertical space goes to the LOAD scope. Sparklines need panels at least 58 columns wide.
 
 If you would rather have a single screen that never scrolls, use `--fit`. That
 mode gives up detail in order — sparklines, then per-GPU rows collapsed to one
@@ -216,16 +234,17 @@ your scrollback.
 
 ## Scan it
 
-The dashboard carries a `SCAN` panel on the right with a scannable QR code for
+`--qr-panel` adds a `SCAN` panel on the right with a scannable QR code for
 this repo — handy for getting the link onto someone's phone at a competition
-without reading a URL out loud.
+without reading a URL out loud. It is off by default.
 
 Each module is one character wide and half a character tall — the upper half
 of a cell is the foreground, the lower half the background — so modules come
 out square on any terminal whose cell is roughly 1:2. Verified by decoding
 rendered output at cell ratios from 1.8 to 2.4, standalone and inside a full
 dashboard frame. The panel is 44 columns and appears when at least 72 are left
-for the queue; `--no-qr` hides it, `--qr` prints just the code.
+for the queue; `--qr` prints just the code. With `--no-color` the code is
+drawn with plain half-block characters, which scans on a dark terminal.
 
 If your font draws block characters with gaps and a scanner struggles,
 `--qr-wide` redraws each module two characters wide using background colour

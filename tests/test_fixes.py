@@ -311,5 +311,55 @@ class WideChars(unittest.TestCase):
         self.assertEqual(m.vlen(m.pad("😀", 4)), 4)
 
 
+class CalmByDefault(unittest.TestCase):
+    """bug 9：動畫與 QR 面板預設關閉；--flair 一次打開全部動畫，--qr-panel 開 QR 面板。"""
+
+    def test_default_frame_does_not_move(self):
+        """沒有 --flair 時，換一個動畫 tick 畫出來要一模一樣（包括色碼）。"""
+        for scn in ("full2x8", "idle2x8"):
+            with self.subTest(scn):
+                a = run(scn, SLURMTOP_FAKE_TICK="0").stdout
+                b = run(scn, SLURMTOP_FAKE_TICK="3").stdout
+                self.assertEqual(a, b)
+
+    def test_flair_moves(self):
+        a = run("full2x8", "--flair", SLURMTOP_FAKE_TICK="0").stdout
+        b = run("full2x8", "--flair", SLURMTOP_FAKE_TICK="3").stdout
+        self.assertNotEqual(a, b)
+
+    def test_default_has_no_effects(self):
+        out = run("full2x8", "--no-color").stdout
+        for ch in "≋≈━◐◓◑◒":
+            self.assertNotIn(ch, out)
+        self.assertIn("● run", out)                          # 固定的執行中標記
+        self.assertNotIn("SCAN", out)
+
+    def test_flair_has_effects(self):
+        out = run("full2x8", "--no-color", "--flair").stdout
+        self.assertTrue(any(ch in out for ch in "≋≈~"))       # 熱氣
+        self.assertTrue(any(ch in out for ch in "◐◓◑◒"))      # 轉動的標記
+        # 邊框跑光：亮點只在跑到一般框線上時才畫得出來，看幾個 tick 裡有沒有出現
+        self.assertTrue(any("━" in run("full2x8", "--no-color", "--flair",
+                                       SLURMTOP_FAKE_TICK=str(t)).stdout for t in range(6)))
+
+    def test_qr_panel_flag(self):
+        self.assertIn("SCAN", run("full2x8", "--no-color", "--qr-panel").stdout)
+        self.assertNotIn("SCAN", run("full2x8", "--no-color", "--flair").stdout)
+        # 舊的 --no-qr 還能用，不會讓別人的指令壞掉
+        p = run("full2x8", "--no-color", "--no-qr")
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_qr_command_kept(self):
+        p = run(None, "--qr", "--no-color")
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("github.com/Sean-Hawks/slurmtop", p.stdout)
+
+    def test_splash_only_with_flair(self):
+        m = load()
+        self.assertFalse(m.want_splash(m.parse_args([])))
+        self.assertTrue(m.want_splash(m.parse_args(["--flair"])))
+        self.assertFalse(m.want_splash(m.parse_args(["--flair", "--no-splash"])))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,8 @@ CASES = [
     ("hang", "hang", ["--no-color", "--node-timeout", "0.3"], 150, 50),
     ("nogpu", "nogpu", ["--no-color", "--nodes", "mac,cpu1"], 100, 40),
     ("longq", "longq", ["--no-color"], 150, 50),
+    ("full2x8_flair", "full2x8", ["--no-color", "--flair", "--qr-panel"], 150, 60),
+    ("longq_qr", "longq", ["--no-color", "--qr-panel"], 150, 50),
 ]
 
 
@@ -53,12 +55,13 @@ class GoldenFrames(unittest.TestCase):
     def test_color_matches_plain(self):
         """加上顏色後，扣掉色碼的可見文字必須跟 --no-color 一模一樣（對齊不能被色碼弄歪）。
 
-        QR 面板例外：彩色版用前景/背景色畫，純文字版用字元畫，本來就不一樣，所以關掉。
+        QR 面板例外：彩色版用前景/背景色畫，純文字版用字元畫，本來就不一樣，所以不開。
         """
         for name, scenario, args, cols, lines in CASES:
+            args = [a for a in args if a != "--qr-panel"]
             with self.subTest(name):
-                plain = run(scenario, *args, "--no-qr", cols=cols, lines=lines).stdout
-                colored = run(scenario, *[a for a in args if a != "--no-color"], "--no-qr",
+                plain = run(scenario, *args, cols=cols, lines=lines).stdout
+                colored = run(scenario, *[a for a in args if a != "--no-color"],
                               cols=cols, lines=lines).stdout
                 self.assertEqual(strip(colored).splitlines(), plain.splitlines())
 

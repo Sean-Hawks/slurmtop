@@ -12,6 +12,7 @@ Slurm automatically; remote nodes are read over SSH.
     slurmtop --proc          # also list processes on each GPU
     slurmtop --stack         # force vertical layout
     slurmtop --no-color      # plain text
+    slurmtop --flair         # animations (border traces, plumes, splash ...)
     slurmtop --lang zh       # 繁體中文介面
 
 Requires only Python 3.8+, nvidia-smi on the nodes, and passwordless SSH to
@@ -57,6 +58,7 @@ def glyphs():
 TL, TR, BL, BR, H, V = "╭", "╮", "╰", "╯", "─", "│"
 
 _color = True
+_flair = False           # --flair：邊框跑光、掃描光點、呼吸、閃爍、熱氣、開機動畫。預設全關
 _lang = "en"
 _title = "cluster"
 
@@ -172,7 +174,7 @@ def gradbar(pct, width=14, hot=False):
     pct = max(0.0, min(100.0, pct))
     filled = int(round(pct / 100 * width))
     _, full, empty, lcap, rcap = glyphs()
-    scan = _tick % (width * 2)                 # 掃描光點的位置
+    scan = _tick % (width * 2) if _flair else -1   # 掃描光點的位置（--flair）
     out = []
     for i in range(width):
         if i < filled:
@@ -352,14 +354,16 @@ PLUME_ASCII = "^~-"
 
 
 def pulse(color, amount=0.4):
-    """讓顏色隨著重畫次數明暗呼吸，用在滿載的東西上。"""
+    """讓顏色隨著重畫次數明暗呼吸，用在滿載的東西上（--flair，否則維持原色）。"""
+    if not _flair:
+        return tuple(color)
     f = 0.5 + 0.5 * math.cos(_tick * 0.9)
     return tuple(min(255, int(c + (255 - c) * amount * f)) for c in color)
 
 
 def plume(temp, util):
-    """熱氣。溫度高或滿載時在旁邊冒一格，會隨著時間變形。"""
-    if temp < HOT_TEMP and util < HOT_UTIL:
+    """熱氣。溫度高或滿載時在旁邊冒一格，會隨著時間變形（--flair）。"""
+    if not _flair or (temp < HOT_TEMP and util < HOT_UTIL):
         return " "
     chars = PLUME_ASCII if _ascii else PLUME
     ch = chars[(_tick + int(temp)) % len(chars)]  # 加 temp 讓每張卡不同步
@@ -375,9 +379,10 @@ def zone_bg(load):
     elif load < 90:
         r, g, b = 40, 18, 6            # 橘
     else:
-        r, g, b = 52, 12, 14           # 紅（滿載時再脈動一下）
-        f = 0.5 + 0.5 * math.cos(_tick * 0.9)
-        r, g, b = int(r + 22 * f), int(g + 4 * f), int(b + 6 * f)
+        r, g, b = 52, 12, 14           # 紅（--flair 時滿載再脈動一下）
+        if _flair:
+            f = 0.5 + 0.5 * math.cos(_tick * 0.9)
+            r, g, b = int(r + 22 * f), int(g + 4 * f), int(b + 6 * f)
     return f"\033[48;2;{r};{g};{b}m"
 
 
@@ -389,7 +394,9 @@ def tint(rows, bg):
 
 
 def blink(text, color, period=2):
-    """警示閃爍：一半的時間亮，一半的時間暗。"""
+    """警示閃爍：一半的時間亮，一半的時間暗。沒開 --flair 就一直亮著。"""
+    if not _flair:
+        return rgb(*color, text)
     return rgb(*color, text) if _tick % (period * 2) < period else dim(text)
 
 
@@ -398,6 +405,9 @@ SPINNER_ASCII = "|/-\\"
 
 
 def spinner():
+    """執行中的 job 標記。--flair 時每次刷新轉一格，否則是固定的點。"""
+    if not _flair:
+        return "*" if _ascii else "●"
     chars = SPINNER_ASCII if _ascii else SPINNER
     return chars[_tick % len(chars)]
 
@@ -919,8 +929,8 @@ def scope(vals, width, height=6):
 
 
 def trace(border, tick_offset=0):
-    """讓一顆亮點沿著邊框跑，像電路上的訊號。"""
-    if _ascii or vlen(border) < 8:
+    """讓一顆亮點沿著邊框跑，像電路上的訊號（--flair）。"""
+    if not _flair or _ascii or vlen(border) < 8:
         return border
     plain = ANSI.sub("", border)
     idx = 2 + (_tick * 2 + tick_offset) % max(1, len(plain) - 4)
@@ -1028,7 +1038,7 @@ def show_qr(wide=False):
 
 
 def splash(nodes):
-    """開機動畫。純裝飾，--no-splash 可關掉。"""
+    """開機動畫。純裝飾，只有 --flair 才播，--no-splash 可再關掉。"""
     steps = [
         "probing slurm controller",
         f"discovering nodes ... {len(nodes)} found",
@@ -1293,7 +1303,7 @@ def update_history(nodes, snaps, ages=None):
 def render(nodes, opt=None, **kw):
     """取樣、更新狀態、畫一整個畫面。opt 是 parse_args() 的結果；測試可以只給 kw。"""
     opt = opt or options(**kw)
-    show_proc, force_stack, fit, want_qr = opt.proc, opt.stack, opt.fit, not opt.no_qr
+    show_proc, force_stack, fit, want_qr = opt.proc, opt.stack, opt.fit, opt.qr_panel
     size = shutil.get_terminal_size((120, 45))
     cols, lines = size.columns, size.lines
     sparks = cols >= 118
@@ -1358,7 +1368,7 @@ MIN_PANEL_W = 49          # 一個節點面板至少要這麼寬才擺得下
 
 
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
-           job_cols=1, slurm_data=("", ""), want_qr=True, scope_h=6, ages=None):
+           job_cols=1, slurm_data=("", ""), want_qr=False, scope_h=6, ages=None):
     # 版面填滿整個終端機：先決定一排放幾個面板，再把寬度平均分掉，
     # 而不是用固定寬度、右邊留一大塊空白。
     total_w = max(MIN_PANEL_W, cols - 1)
@@ -1443,14 +1453,21 @@ def parse_args(argv=None):
     ap.add_argument("--fit", action="store_true",
                     help="squeeze everything into one screen (drops detail if needed)")
     ap.add_argument("--no-color", action="store_true", help="disable colour")
-    ap.add_argument("--no-splash", action="store_true", help="skip the boot animation")
+    ap.add_argument("--flair", action="store_true",
+                    help="turn on every animation: border traces, scan sweep, breathing and "
+                         "blinking, heat plumes, spinning job markers and the boot splash")
+    ap.add_argument("--no-splash", action="store_true",
+                    help="skip the boot animation (only played with --flair)")
     ap.add_argument("--qr", action="store_true",
                     help="print only the QR code for the project repo and exit")
     ap.add_argument("--qr-wide", action="store_true",
                     help="draw QR modules two characters wide (for fonts where "
                          "half-blocks leave gaps)")
+    ap.add_argument("--qr-panel", action="store_true",
+                    help="show a QR code for the project repo beside the queue "
+                         "(needs a wide terminal)")
     ap.add_argument("--no-qr", action="store_true",
-                    help="hide the QR panel (shown when the terminal is wide enough)")
+                    help=argparse.SUPPRESS)            # 舊參數：QR 面板已經預設關閉，留著不讓舊指令壞掉
     ap.add_argument("--ascii", action="store_true",
                     help="ASCII bars/sparklines for fonts without block glyphs")
     ap.add_argument("--lang", choices=sorted(STRINGS), help="ui language (default: auto)")
@@ -1461,6 +1478,10 @@ def parse_args(argv=None):
     ap.add_argument("-V", "--version", action="version",
                     version=f"slurmtop {__version__} - credited by {__credits__}")
     return ap.parse_args(argv)
+
+
+def want_splash(args):
+    return args.flair and not args.no_splash and not _ascii
 
 
 def options(**kw):
@@ -1474,10 +1495,11 @@ def options(**kw):
 def main():
     args = parse_args()
 
-    global _color, _lang, _title, _ascii
+    global _color, _lang, _title, _ascii, _flair
     if args.no_color:
         _color = False
     _ascii = args.ascii
+    _flair = args.flair
     if args.lang:
         _lang = args.lang
     elif any(x in os.environ.get("LANG", "") for x in ("zh_TW", "zh_HK", "zh_CN")):
@@ -1500,7 +1522,7 @@ def main():
         # 1049h = 切到備用畫面緩衝區，25l = 藏游標。
         # 用備用緩衝區而不是狂清畫面，捲動時才不會把舊的畫面留在 scrollback。
         sys.stdout.write("\033[?1049h\033[?25l")
-        if not args.no_splash and not _ascii:
+        if want_splash(args):
             splash(nodes)
         while True:
             sys.stdout.write("\033[H\033[J"
