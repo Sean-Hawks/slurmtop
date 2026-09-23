@@ -22,6 +22,7 @@ CASES = [
     ("full2x8_fit", "full2x8", ["--no-color", "--fit"], 120, 30),
     ("full2x8_stack", "full2x8", ["--no-color", "--stack"], 90, 60),
     ("unreachable", "unreachable", ["--no-color"], 150, 60),
+    ("na_fields", "na_fields", ["--no-color", "--proc"], 150, 60),
     ("nogpu", "nogpu", ["--no-color", "--nodes", "mac,cpu1"], 100, 40),
     ("longq", "longq", ["--no-color"], 150, 50),
 ]

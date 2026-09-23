@@ -346,7 +346,7 @@ def plume(temp, util):
     if temp < HOT_TEMP and util < HOT_UTIL:
         return " "
     chars = PLUME_ASCII if _ascii else PLUME
-    ch = chars[(_tick + temp) % len(chars)]      # 加 temp 讓每張卡不同步
+    ch = chars[(_tick + int(temp)) % len(chars)]  # 加 temp 讓每張卡不同步
     return rgb(*pulse(heat(100 if temp >= ALERT_TEMP else 88), 0.3), ch)
 
 
@@ -404,8 +404,10 @@ def gpu_strip(gpus, sep=""):
     ch = "#" if _ascii else "▉"
     out = []
     for g in gpus:
-        u = float(g[1])
-        if u < 1:
+        u = g["util"]
+        if u is None:                          # 讀不到（MIG 等）
+            out.append(grey("-"))
+        elif u < 1:
             out.append(grey("." if _ascii else "▁"))
         elif u >= HOT_UTIL:
             out.append(rgb(*pulse(heat(u), 0.35), ch))
@@ -562,6 +564,66 @@ def run_script(node, script, timeout=20):
 
 
 SECTIONS = ("cpu", "load", "mem", "gpu", "proc")
+GPU_FIELDS = ("idx", "util", "mem_used", "mem_total", "temp", "power")   # 順序同 GPU_Q
+
+
+def num(s):
+    """nvidia-smi 的數值欄位轉 float。
+
+    MIG 模式的使用率、某些卡的功耗會是 [N/A]、[Not Supported]、[Unknown Error]，
+    也可能整欄是空的。這些一律回傳 None，顯示時畫成 "-"，不要讓整個程式掛掉。
+    """
+    try:
+        v = float((s or "").strip())
+    except ValueError:
+        return None
+    return v if math.isfinite(v) else None
+
+
+def fnum(v, fmt):
+    """依 fmt 格式化數值；讀不到（None）就顯示同寬的 "-"，欄位不會錯位。"""
+    return fmt % v if v is not None else "-".rjust(len(fmt % 0))
+
+
+def parse_gpu(line):
+    """--query-gpu 的一行 -> dict。索引以外的欄位讀不到就是 None。"""
+    f = [x.strip() for x in line.split(",")]
+    if not f[0]:
+        return None
+    f += [""] * (len(GPU_FIELDS) - len(f))
+    g = {"idx": f[0]}
+    for k, v in zip(GPU_FIELDS[1:], f[1:]):
+        g[k] = num(v)
+    return g
+
+
+def parse_proc(line):
+    """--query-compute-apps 的一行 -> dict。行程名稱可能含逗號，所以剩下的全部接回去。"""
+    f = [x.strip() for x in line.split(",")]
+    if len(f) < 3 or not f[0]:
+        return None
+    return {"pid": f[0], "mem": num(f[1]), "name": ",".join(f[2:]).strip()}
+
+
+def gpu_stats(gpus):
+    """一群 GPU 的彙總。讀不到的欄位不算進去；整欄都讀不到時平均、功耗、溫度就是 None。"""
+    def known(k):
+        return [g[k] for g in gpus if g[k] is not None]
+    utils, temps, power = known("util"), known("temp"), known("power")
+    return {
+        "n": len(gpus),
+        "util": sum(utils) / len(utils) if utils else None,
+        "busy": sum(1 for u in utils if u > 5),
+        "vram_u": sum(known("mem_used")) / 1024,
+        "vram_t": sum(known("mem_total")) / 1024,
+        "power": sum(power) if power else None,
+        "tmax": max(temps) if temps else None,
+    }
+
+
+def temp_color(t):
+    """溫度的顏色：35°C 綠、85°C 紅。"""
+    return heat(max(0, min(100, (t - 35) / 50 * 100)))
 
 
 def sections(out):
@@ -615,13 +677,8 @@ def snapshot(node):
         d["mem_total"], d["mem_used"] = int(mt), int(mu)
     except Exception:
         d["mem_total"] = d["mem_used"] = 0
-    d["gpus"] = [[x.strip() for x in ln.split(",")] for ln in parts[3].splitlines() if ln.strip()]
-    d["procs"] = []
-    if len(parts) > 4:
-        for ln in parts[4].splitlines():
-            f = [x.strip() for x in ln.split(",")]
-            if len(f) >= 3:
-                d["procs"].append(f)
+    d["gpus"] = [g for g in map(parse_gpu, parts[3].splitlines()) if g]
+    d["procs"] = [p for p in map(parse_proc, parts[4].splitlines()) if p]
     return d
 
 
@@ -643,13 +700,10 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     # 沒有 GPU 的機器（CPU-only 節點、開發用筆電）照樣顯示 CPU/RAM，
     # 整台的「熱度」就改用 CPU 使用率當指標。
     has_gpu = bool(d["gpus"])
-    utils = [float(g[1]) for g in d["gpus"]]
-    avg_util = (sum(utils) / len(utils)) if has_gpu else d["cpu_pct"]
-    vram_u = sum(float(g[2]) for g in d["gpus"]) / 1024 if has_gpu else 0
-    vram_t = sum(float(g[3]) for g in d["gpus"]) / 1024 if has_gpu else 0
-    power = sum(float(g[5]) for g in d["gpus"]) if has_gpu else 0
-    busy = sum(1 for u in utils if u > 5)
-    tmax = max((int(float(g[4])) for g in d["gpus"]), default=0)
+    st = gpu_stats(d["gpus"])
+    # 全部的卡都讀不到使用率（例如整台開 MIG）時，熱度就當 0，數字顯示 "-"
+    avg_util = (st["util"] or 0.0) if has_gpu else d["cpu_pct"]
+    busy = st["busy"]
     mem_pct = d["mem_used"] / d["mem_total"] * 100 if d["mem_total"] else 0
 
     # 標題列
@@ -659,8 +713,9 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     left = (f"{dim(cyan('┤'))} {dim('NODE')} {bold(cyan(node))} {led} "
             f"{dim(where.upper())} {dim(cyan('├'))}")
     if has_gpu:
-        right = (f" {busy}/{len(d['gpus'])} {T('busy')} {dim('·')} {vram_u:.0f}G {dim('·')} "
-                 f"{mag('%.1f kW' % (power / 1000))} {dim('·')} {tmax}°C ")
+        pw = fnum(st["power"] / 1000 if st["power"] is not None else None, "%.1f kW")
+        right = (f" {busy}/{len(d['gpus'])} {T('busy')} {dim('·')} {st['vram_u']:.0f}G {dim('·')} "
+                 f"{mag(pw.strip())} {dim('·')} {fnum(st['tmax'], '%.0f').strip()}°C ")
     else:
         right = f" {d['ncpu']} {T('threads')} {dim('·')} {T('no_gpu')} "
     if vlen(left) + vlen(right) > inner:            # 窄視窗時右側資訊先讓位
@@ -679,24 +734,27 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     line(f" {dim(cyan('MEM'))} {gradbar(mem_pct)} {mem_pct:5.1f}%   {dim(mem_txt)}")
 
     if compact:
-        line(f" {bold('GPU')} {gradbar(avg_util)} {avg_util:5.1f}% "
+        line(f" {bold('GPU')} {gradbar(avg_util)} {fnum(st['util'], '%5.1f%%')} "
              f"{dim('%d/%d %s' % (busy, len(d['gpus']), T('busy')))} "
-             f"{dim('%.0f/%.0fG' % (vram_u, vram_t))}")
+             f"{dim('%.0f/%.0fG' % (st['vram_u'], st['vram_t']))}")
         rows.append(rgb(*heat(avg_util), BL + H * inner + BR))
         return tint(rows, zone_bg(avg_util))
 
     for g in d["gpus"]:
-        idx, util = g[0], float(g[1])
-        mu, mt, temp, pw = float(g[2]), float(g[3]), int(float(g[4])), float(g[5])
-        tcol = heat(max(0, min(100, (temp - 35) / 50 * 100)))
+        idx, util, temp = g["idx"], g["util"], g["temp"]
+        u = util or 0.0                                 # 畫長條用；數字照實顯示 "-"
+        mu = g["mem_used"] / 1024 if g["mem_used"] is not None else None
+        temp_s = fnum(temp, "%2.0f°")
         sp = (" " + spark(hist((node, f"g{idx}")), 8)) if sparks else ""
-        line(f" {dim(cyan('G'))}{bold(idx)} {gradbar(util, 12, util >= HOT_UTIL)} "
-             f"{util:3.0f}%{plume(temp, util)}{sp} "
-             f"{mu/1024:5.1f}G {rgb(*tcol, f'{temp:>2}°')} {dim(f'{pw:4.0f}W')}")
+        line(f" {dim(cyan('G'))}{bold(idx)} {gradbar(u, 12, u >= HOT_UTIL)} "
+             f"{fnum(util, '%3.0f%%')}{plume(temp or 0, u)}{sp} "
+             f"{fnum(mu, '%5.1fG')} {rgb(*temp_color(temp), temp_s) if temp is not None else grey(temp_s)} "
+             f"{dim(fnum(g['power'], '%4.0fW'))}")
 
     if show_proc and d["procs"]:
-        for pid, mem, name in d["procs"][:8]:
-            line(dim(f"   {pid:>8} {float(mem)/1024:5.1f}G {name.split('/')[-1][:18]}"))
+        for p in d["procs"][:8]:
+            mem = p["mem"] / 1024 if p["mem"] is not None else None
+            line(dim(f"   {p['pid']:>8} {fnum(mem, '%5.1fG')} {p['name'].split('/')[-1][:18]}"))
         if len(d["procs"]) > 8:
             line(dim(f"   …還有 {len(d['procs']) - 8} 個"))
 
@@ -919,13 +977,9 @@ def cluster_header(snaps, width):
         return [rgb(231, 76, 60, "NO TELEMETRY")]
     if not gpus:                                   # CPU-only 叢集
         return cpu_header(live, width)
-    utils = [float(g[1]) for g in gpus]
-    avg = sum(utils) / len(utils)
-    busy = sum(1 for u in utils if u > 5)
-    power = sum(float(g[5]) for g in gpus)
-    tmax = max(int(float(g[4])) for g in gpus)
-    vram_u = sum(float(g[2]) for g in gpus) / 1024
-    vram_t = sum(float(g[3]) for g in gpus) / 1024
+    st = gpu_stats(gpus)
+    avg = st["util"] or 0.0                        # 畫儀表用；數字照實顯示 "-"
+    busy, power, tmax = st["busy"], st["power"], st["tmax"]
 
     # 頂列：◤ SLURMTOP ── cluster ─────────── 時間 ◥
     tag = f" {bold(cyan('SLURMTOP'))} {dim('//')} {bold(_title)} "
@@ -937,16 +991,18 @@ def cluster_header(snaps, width):
     lab = lambda t: dim(cyan(f"{t:<5}"))
     gauge = [
         "  " + arc_gauge(avg),
-        "  " + pad(f"{bold('%.1f%%' % avg)} {dim(cyan('UTIL'))}", 17),
+        "  " + pad(f"{bold(fnum(st['util'], '%.1f%%'))} {dim(cyan('UTIL'))}", 17),
         "  " + pad(f"{trend(('all', 'gpu'), avg)} {spark(hist(('all', 'gpu')), 12)}", 17),
     ]
     tele = [
         f"{lab('CORE')} {bold(str(busy))}/{len(gpus)} {dim('online')}"
         + (("   " + blink("◆ FULL LOAD", (255, 170, 40))) if avg >= 90 else ""),
-        f"{lab('PWR')}  {mag('%.2f kW' % (power / 1000))}   "
-        f"{lab('MEM')} {vram_u:.0f}{dim('/')}{vram_t:.0f} GiB   "
-        f"{lab('THRM')} {rgb(*heat(max(0, min(100, (tmax - 35) / 50 * 100))), '%d°C' % tmax)}"
-        + (("  " + blink("▲ THERMAL", (231, 76, 60))) if tmax >= ALERT_TEMP else ""),
+        f"{lab('PWR')}  {mag(fnum(power / 1000 if power is not None else None, '%.2f kW'))}   "
+        f"{lab('MEM')} {st['vram_u']:.0f}{dim('/')}{st['vram_t']:.0f} GiB   "
+        f"{lab('THRM')} "
+        + (rgb(*temp_color(tmax), '%d°C' % tmax) if tmax is not None else grey("-"))
+        + (("  " + blink("▲ THERMAL", (231, 76, 60)))
+           if tmax is not None and tmax >= ALERT_TEMP else ""),
         f"{lab('GRID')} " + ("  " + dim("│") + "  ").join(
             gpu_strip(d["gpus"]) for d in snaps if d and d["gpus"]),
     ]
@@ -1056,21 +1112,25 @@ def update_history(nodes, snaps):
     歷史（sparkline、趨勢箭頭、示波器）只在這裡寫入。render() 為了挑版面會把
     _frame() 畫好幾遍，所以繪圖函式一律只讀，不然一次刷新會寫進好幾筆。
     """
+    # 讀不到的使用率（None）不寫進歷史，sparkline 只畫真的量到的值
     for node, d in zip(nodes, snaps):
         if not d:
             continue
-        utils = [float(g[1]) for g in d["gpus"]]
         _hist[(node, "cpu")].append(d["cpu_pct"])
-        _hist[(node, "gpu")].append(sum(utils) / len(utils) if utils else d["cpu_pct"])
+        avg = gpu_stats(d["gpus"])["util"] if d["gpus"] else d["cpu_pct"]
+        if avg is not None:
+            _hist[(node, "gpu")].append(avg)
         for g in d["gpus"]:                    # 每張卡的歷史一定要更新，即使沒畫出來
-            _hist[(node, f"g{g[0]}")].append(float(g[1]))
+            if g["util"] is not None:
+                _hist[(node, f"g{g['idx']}")].append(g["util"])
     live = [d for d in snaps if d]
     if not live:
         return
-    utils = [float(g[1]) for d in live for g in d["gpus"]]
+    gpus = [g for d in live for g in d["gpus"]]
     # 全叢集那條：有 GPU 看 GPU 平均，CPU-only 叢集改看 CPU 平均，示波器照畫
-    _hist[("all", "gpu")].append(sum(utils) / len(utils) if utils
-                                 else sum(d["cpu_pct"] for d in live) / len(live))
+    avg = gpu_stats(gpus)["util"] if gpus else sum(d["cpu_pct"] for d in live) / len(live)
+    if avg is not None:
+        _hist[("all", "gpu")].append(avg)
 
 
 def render(nodes, show_proc=False, force_stack=False, fit=False, want_qr=True):
