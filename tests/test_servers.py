@@ -122,6 +122,27 @@ class DiskAndNet(unittest.TestCase):
         self.assertEqual(self.run_bash(seg), "%d %d" % (1000 + 123456789012 + 500,
                                                         2000 + 98765432109 + 700))
 
+    def test_linux_bond_and_vlan_not_double_counted(self):
+        """bond0 = eth0 + eth1；eth0.100 是 VLAN、ib0.8001 是 IPoIB 子介面，只算上層那張卡。"""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, tmp)
+        for nic in ("eth0", "eth1"):
+            os.makedirs(os.path.join(tmp, "sys", nic))
+            os.symlink("../bond0", os.path.join(tmp, "sys", nic, "master"))
+        os.makedirs(os.path.join(tmp, "sys", "bond0"))
+        dev = os.path.join(tmp, "dev")
+        with open(dev, "w") as f:
+            f.write(PROC_NET_DEV.splitlines()[0] + "\n" + PROC_NET_DEV.splitlines()[1] + "\n"
+                    "  bond0: 3000 1 0 0 0 0 0 0 6000 1 0 0 0 0 0 0\n"
+                    "   eth0: 1000 1 0 0 0 0 0 0 2000 1 0 0 0 0 0 0\n"
+                    "   eth1: 2000 1 0 0 0 0 0 0 4000 1 0 0 0 0 0 0\n"
+                    "eth0.100: 500 1 0 0 0 0 0 0 500 1 0 0 0 0 0 0\n"
+                    "    ib0: 700 1 0 0 0 0 0 0 900 1 0 0 0 0 0 0\n"
+                    "ib0.8001: 70 1 0 0 0 0 0 0 90 1 0 0 0 0 0 0\n")
+        seg = self.net_segment().replace("/proc/net/dev", dev) \
+                                .replace("/sys/class/net", os.path.join(tmp, "sys"))
+        self.assertEqual(self.run_bash(seg), "%d %d" % (3000 + 700, 6000 + 900))
+
     def test_macos_netstat(self):
         fd, path = tempfile.mkstemp()
         with os.fdopen(fd, "w") as f:

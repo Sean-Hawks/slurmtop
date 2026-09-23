@@ -653,8 +653,14 @@ echo '@@net'
 # 實體網卡累計收／送的 bytes，速度由兩次取樣相減。不算 lo 和容器、VPN 的虛擬網卡，
 # 否則同一份流量會經過好幾張卡被重複計算。
 if [ -r /proc/net/dev ]; then
-  awk 'NR > 2 {{ sub(/^ */, ""); split($0, a, /[: ]+/)
-         if (a[1] !~ /^(lo|veth|docker|br-|virbr|cni|flannel|cali|tun|tap)/) {{ rx += a[2]; tx += a[10] }} }}
+  # bond／bridge 的成員（有 master）和 VLAN、IPoIB 子介面（名字有 .）的流量已經算在上層那張卡
+  skip=" "
+  for m in /sys/class/net/*/master; do
+    [ -e "$m" ] && skip="$skip$(basename "$(dirname "$m")") "
+  done
+  awk -v skip="$skip" 'NR > 2 {{ sub(/^ */, ""); split($0, a, /[: ]+/)
+         if (a[1] !~ /^(lo|veth|docker|br-|virbr|cni|flannel|cali|tun|tap)/ && a[1] !~ /\\./ &&
+             index(skip, " " a[1] " ") == 0) {{ rx += a[2]; tx += a[10] }} }}
        END {{ printf "%.0f %.0f\\n", rx, tx }}' /proc/net/dev
 elif command -v netstat >/dev/null 2>&1; then
   # macOS：每張卡有一行 <Link#N>；沒有 MAC 位址的卡（utun 之類）少一欄
