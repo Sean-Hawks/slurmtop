@@ -696,7 +696,7 @@ def run_script(node, script, timeout=HARD_TIMEOUT):
 NODE_TIMEOUT = 6.0       # 每次刷新最多等每台節點幾秒（--node-timeout）
 STALE_MAX = 60           # 超過這麼久拿不到新資料，就不再沿用舊的，改顯示連不上
 
-_inflight = {}           # key -> (thread, box)：還沒跑完的取樣
+_inflight = {}           # key -> (thread, box, 開始時間)：還沒跑完的取樣
 _last = {}               # key -> (資料, 取得時間)：最近一次成功的取樣
 
 
@@ -715,17 +715,18 @@ def fetch(jobs, timeout):
     從來沒成功過就是 (None, None)。沒跑完的取樣留著繼續跑，下次刷新直接收
     結果，不會重複再開一個，所以卡住的節點不會越積越多連線。
     """
-    end = time.monotonic() + timeout
     for key, (fn, arg) in jobs.items():
         if key not in _inflight:
             box = {}
             t = threading.Thread(target=_worker, args=(fn, arg, box), daemon=True)
             t.start()
-            _inflight[key] = (t, box)
+            _inflight[key] = (t, box, time.monotonic())
     out = {}
     for key in jobs:
-        t, box = _inflight[key]
-        t.join(max(0.0, end - time.monotonic()))
+        # 截止時間從這個取樣開始的時候算：前幾次刷新就已經逾時的不再等，
+        # 不然一台卡住的節點會讓之後每次刷新都多等 timeout 秒
+        t, box, started = _inflight[key]
+        t.join(max(0.0, started + timeout - time.monotonic()))
         if not t.is_alive():
             del _inflight[key]
             if box.get("v"):

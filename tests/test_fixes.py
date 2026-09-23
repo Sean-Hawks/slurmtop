@@ -158,6 +158,21 @@ class HungNodeDoesNotFreeze(unittest.TestCase):
         self.assertEqual(m._fx_calls["n2"], 1)
         self.assertEqual(m._fx_calls["n1"], 3)
 
+    def test_stuck_node_does_not_slow_later_refreshes(self):
+        """截止時間從取樣開始時算：卡住的節點只拖慢第一次刷新，之後照正常速度更新。"""
+        m = load()
+        with fx_env("hang"):
+            t = time.monotonic()
+            m.render(["n1", "n2"], node_timeout=0.5)
+            first = time.monotonic() - t
+            t = time.monotonic()
+            for _ in range(3):
+                m.render(["n1", "n2"], node_timeout=0.5)
+            later = time.monotonic() - t
+        self.assertGreaterEqual(first, 0.45)
+        self.assertLess(later, 0.5)                       # 三次加起來還不到一個 timeout
+        self.assertEqual(m._fx_calls["n1"], 4)            # n1 每次都有新資料
+
     def test_stale_expires(self):
         m = load()
         with fx_env("hang", SLURMTOP_FAKE_NOW="1000"):
