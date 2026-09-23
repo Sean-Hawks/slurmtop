@@ -269,5 +269,29 @@ class UserColumn(unittest.TestCase):
         self.assertIn("chen", out)
 
 
+class ProcOverflowString(unittest.TestCase):
+    """bug 6：--proc 超過 8 個行程時的「還有 N 個」要走 STRINGS，英文介面不能冒出中文。"""
+
+    def panel(self, lang):
+        m = load()
+        m._color, m._lang = False, lang
+        d = {"cpu_pct": 1.0, "load": [0, 0, 0], "ncpu": 8, "mem_total": 1024, "mem_used": 512,
+             "gpus": [m.parse_gpu("0, 90, 1024, 2048, 50, 300")],
+             "procs": [m.parse_proc(f"{100 + i}, 512, /bin/python{i}") for i in range(11)]}
+        return "\n".join(m.node_panel("x", d, 80, True, False))
+
+    def test_en(self):
+        out = self.panel("en")
+        self.assertIn("… 3 more", out)
+        self.assertNotIn("還有", out)
+
+    def test_zh(self):
+        self.assertIn("…還有 3 個", self.panel("zh"))
+
+    def test_every_key_in_both_languages(self):
+        m = load()
+        self.assertEqual(set(m.STRINGS["en"]), set(m.STRINGS["zh"]))
+
+
 if __name__ == "__main__":
     unittest.main()

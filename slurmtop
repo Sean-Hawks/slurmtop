@@ -69,7 +69,7 @@ STRINGS = {
         "hidden": "%d more job(s) hidden - run squeue for the full list",
         "footer": "Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval",
         "gpus": "GPUs", "local": "local", "remote": "ssh", "prog": "PROG", "threads": "threads", "no_gpu": "no GPU",
-        "stale": "stale %ds", "user": "USER",
+        "stale": "stale %ds", "user": "USER", "more_procs": "… %d more",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -80,7 +80,7 @@ STRINGS = {
         "hidden": "…還有 %d 個 job 未顯示（用 squeue 看完整清單）",
         "footer": "Ctrl-C 離開  ·  --proc 看行程  ·  --stack 上下排列  ·  -n <秒> 改間隔",
         "gpus": "張", "local": "本機", "remote": "ssh", "prog": "進度", "threads": "執行緒", "no_gpu": "無 GPU",
-        "stale": "%d 秒前的資料", "user": "使用者",
+        "stale": "%d 秒前的資料", "user": "使用者", "more_procs": "…還有 %d 個",
     },
 }
 
@@ -869,7 +869,7 @@ def node_panel(node, d, width, show_proc, sparks, compact=False, age=None):
             mem = p["mem"] / 1024 if p["mem"] is not None else None
             line(dim(f"   {p['pid']:>8} {fnum(mem, '%5.1fG')} {p['name'].split('/')[-1][:18]}"))
         if len(d["procs"]) > 8:
-            line(dim(f"   …還有 {len(d['procs']) - 8} 個"))
+            line(dim("   " + T("more_procs") % (len(d["procs"]) - 8)))
 
     rows.append(rgb(*heat(avg_util), BL + H * inner + BR))
     return tint(rows, zone_bg(avg_util))
