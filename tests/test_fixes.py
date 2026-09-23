@@ -203,6 +203,33 @@ class HungNodeDoesNotFreeze(unittest.TestCase):
         self.assertEqual(m._procs, set())
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    def test_signals_reap_children(self):
+        """live 模式被 TERM / HUP（關掉終端機）時，卡住的 ssh 也要一起收掉。"""
+        import signal
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(sig.name):
+                tmp = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, tmp)
+                marker = "slurmtop-test-sig-%d-%d" % (os.getpid(), sig)
+                with open(os.path.join(tmp, "ssh"), "w") as f:
+                    f.write("#!/bin/sh\nexec -a %s sleep 60\n" % marker)
+                os.chmod(os.path.join(tmp, "ssh"), 0o755)
+                e = env(None, 150, 40)
+                e["PATH"] = tmp + os.pathsep + e["PATH"]
+                p = subprocess.Popen([sys.executable, SCRIPT, "--no-color", "-n", "0.2",
+                                      "--nodes", "stuck-node", "--node-timeout", "0.2"],
+                                     env=e, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                time.sleep(1.5)
+                self.assertTrue(subprocess.run(["pgrep", "-f", marker],
+                                               capture_output=True).stdout)   # 真的卡著
+                p.send_signal(sig)
+                p.communicate(timeout=10)
+                self.assertEqual(p.returncode, 128 + sig)
+                time.sleep(0.3)
+                left = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+                self.assertEqual(left.stdout.strip(), "", "child survived " + sig.name)
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
     def test_real_hung_ssh(self):
         """不用假資料：PATH 上放一個會卡住的假 ssh，--once 要準時結束，卡住的行程要被砍掉。"""
         tmp = tempfile.mkdtemp()

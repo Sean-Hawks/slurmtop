@@ -32,6 +32,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -2081,8 +2082,17 @@ def options(**kw):
     return opt
 
 
+def _exit_on_signal(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
 def main():
     args = parse_args()
+    # 子行程開在自己的 session，關掉終端機時不會跟著收到 SIGHUP。收到 TERM/HUP 時
+    # 轉成正常結束，finally 會還原終端機、atexit 的 _reap() 會把還在跑的 ssh 砍掉。
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), _exit_on_signal)
 
     global _color, _lang, _title, _ascii, _flair
     if args.no_color:
