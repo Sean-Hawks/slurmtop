@@ -14,30 +14,49 @@ import shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 H200_MIB = 143771
-SQUEUE_FMT = "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l|%u"      # 同 slurmtop 的 SQUEUE
+SQUEUE_FMT = "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l|%u|%A"   # 同 slurmtop 的 SQUEUE
 
 
-def gpu_line(i, util, mem, temp, power, total=H200_MIB):
+def uuid(i, node="n1"):
+    return "GPU-%08x-%s-0000-0000-%012x" % (0x5a17 + i, node.encode().hex()[:4].ljust(4, "0"), i)
+
+
+def gpu_line(i, util, mem, temp, power, total=H200_MIB, node="n1"):
     """nvidia-smi --query-gpu 的一行，欄位順序同 GPU_Q。"""
-    return f"{i}, {util}, {mem}, {total}, {temp}, {power}"
+    return f"{i}, {uuid(i, node)}, {util}, {mem}, {total}, {temp}, {power}"
 
 
-def remote(gpus=(), procs=(), cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",
+def proc_line(i, pid, mem, name, node="n1"):
+    """--query-compute-apps 的一行，欄位順序同 PROC_Q。"""
+    return f"{uuid(i, node)}, {pid}, {mem}, {name}"
+
+
+def remote(gpus=(), procs=(), jobs=(), cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",
            load="7.0 6.5 6.1", ncpu=224, mem=(2063000, 976000)):
-    """組出一份 REMOTE 的輸出。參數順序跟腳本的段落一樣。"""
+    """組出一份 REMOTE 的輸出。參數順序跟腳本的段落一樣。jobs 是 "pid job user"。"""
     out = ["@@cpu", cpu, "@@load", load, str(ncpu), "@@mem", "%d %d" % mem, "@@gpu"]
     out += list(gpus)
     out += ["@@proc"] + list(procs)
+    out += ["@@jobs"] + list(jobs)
     return "\n".join(out) + "\n"
 
 
-def idle_gpus(base_temp=30):
-    return [gpu_line(i, 0, 1, base_temp + i % 3, "%.2f" % (75 + i)) for i in range(8)]
+def scontrol_job(jid, user, state, alloc, name="job"):
+    """scontrol -d -o show job 的一行。alloc 是 [(節點清單, GRES 字串)]。"""
+    head = (f"JobId={jid} JobName={name} UserId={user}(1001) GroupId={user}(1001) "
+            f"Priority=1 JobState={state} Reason=None NumNodes={len(alloc) or 1} "
+            f"TresPerNode=gres/gpu:8")
+    detail = "".join(f" Nodes={n} CPU_IDs=0-31 Mem=0 GRES={g}" for n, g in alloc)
+    return head + detail
 
 
-def full_gpus(base_temp=62):
+def idle_gpus(base_temp=30, node="n1"):
+    return [gpu_line(i, 0, 1, base_temp + i % 3, "%.2f" % (75 + i), node=node) for i in range(8)]
+
+
+def full_gpus(base_temp=62, node="n1"):
     return [gpu_line(i, 100 if i % 3 else 98, 122640, base_temp + i % 3 * 3,
-                     "%.2f" % (648 + i * 4)) for i in range(8)]
+                     "%.2f" % (648 + i * 4), node=node) for i in range(8)]
 
 
 def sinfo(states):
@@ -46,7 +65,7 @@ def sinfo(states):
 
 def squeue_line(jid, name, st, used, left, nnodes, cpus, gres, where, limit, user, raw=None):
     return "|".join(map(str, [jid, name, st, used, left, nnodes, cpus, gres, where, limit,
-                              user]))
+                              user, raw or jid]))
 
 
 def write(scn, files):
@@ -75,23 +94,32 @@ def main():
                                           ("n2", "idle", "0/224/0/224")]),
                       "squeue.txt": "",
                       "node/n1.txt": remote(idle_gpus(), load="0.3 0.2 0.1"),
-                      "node/n2.txt": remote(idle_gpus(31), load="0.1 0.1 0.1")})
+                      "node/n2.txt": remote(idle_gpus(31, "n2"), load="0.1 0.1 0.1")})
 
     # 2. 兩台 x 8 張，全部滿載，佇列有跑的也有排隊的
     full_q = [
-        squeue_line(871, "hawks-mxp16", "R", "12:32", "47:28", 2, 448, "gres/gpu:8", "n[1-2]", "1:00:00", "hawks"),
+        squeue_line(871, "hawks-mxp16", "R", "12:32", "47:28", 1, 224, "gres/gpu:8", "n1", "1:00:00", "hawks"),
         squeue_line(872, "hawks-qe-pw", "R", "9:24", "20:36", 1, 224, "gres/gpu:8", "n2", "30:00", "hawks"),
         squeue_line(873, "hawks-eagle", "PD", "0:00", "2:00:00", 1, 32, "gres/gpu:4", "(Resources)", "2:00:00", "lin"),
         squeue_line(874, "hawks-cfd", "PD", "0:00", "3:00:00", 1, 14, "N/A", "(Dependency)", "3:00:00", "chen"),
     ]
-    full_procs1 = [f"{41000 + i}, 122000, /usr/bin/python3" for i in range(8)]
-    full_procs2 = [f"{52000 + i}, 122000, /opt/qe/bin/pw.x" for i in range(8)]
+    full_procs1 = [proc_line(i, 41000 + i, 122000, "/usr/bin/python3") for i in range(8)]
+    full_procs2 = [proc_line(i, 52000 + i, 122000, "/opt/qe/bin/pw.x", "n2") for i in range(8)]
     write("full2x8", {**slurm_common(),
                       "sinfo.txt": sinfo([("n1", "allocated", "224/0/0/224"),
                                           ("n2", "allocated", "224/0/0/224")]),
                       "squeue.txt": "\n".join(full_q) + "\n",
-                      "node/n1.txt": remote(full_gpus(), full_procs1, load="18.2 8.1 7.3"),
-                      "node/n2.txt": remote(full_gpus(56), full_procs2, load="17.9 8.0 7.0")})
+                      "scontrol_jobs.txt": "\n".join([
+                          scontrol_job(871, "hawks", "RUNNING", [("n1", "gpu:h200:8(IDX:0-7)")]),
+                          scontrol_job(872, "hawks", "RUNNING", [("n2", "gpu:h200:8(IDX:0-7)")]),
+                          scontrol_job(873, "lin", "PENDING", []),
+                          scontrol_job(874, "chen", "PENDING", [])]) + "\n",
+                      "node/n1.txt": remote(full_gpus(), full_procs1,
+                                            [f"{41000 + i} 871 hawks" for i in range(8)],
+                                            load="18.2 8.1 7.3"),
+                      "node/n2.txt": remote(full_gpus(56, "n2"), full_procs2,
+                                            [f"{52000 + i} 872 hawks" for i in range(8)],
+                                            load="17.9 8.0 7.0")})
 
     # 3. GPU 欄位含 [N/A]：n1 開了 MIG（使用率讀不到）、有張卡功耗讀不到、還有空欄位
     na_gpus = [
@@ -104,15 +132,15 @@ def main():
         gpu_line(6, 0, 1, 31, "76.00"),
         gpu_line(7, 0, 1, 31, "76.00"),
     ]
-    na_procs = ["61000, [N/A], /usr/bin/python3",
-                "61001, 40000, /usr/bin/python3"]
+    na_procs = [proc_line(0, 61000, "[N/A]", "/usr/bin/python3"),
+                proc_line(2, 61001, 40000, "/usr/bin/python3")]
     write("na_fields", {**slurm_common(),
                         "sinfo.txt": sinfo([("n1", "mixed", "32/192/0/224"),
                                             ("n2", "idle", "0/224/0/224")]),
                         "squeue.txt": squeue_line(900, "mig-test", "R", "5:00", "55:00", 1, 32,
                                                   "gres/gpu:2", "n1", "1:00:00", "lin") + "\n",
-                        "node/n1.txt": remote(na_gpus, na_procs),
-                        "node/n2.txt": remote(idle_gpus())})
+                        "node/n1.txt": remote(na_gpus, na_procs, ["61000 900 lin", "61001 900 lin"]),
+                        "node/n2.txt": remote(idle_gpus(node="n2"))})
 
     # 4. 一台節點卡住不回應（n2 睡 30 秒）
     write("hang", {**slurm_common(),
@@ -149,7 +177,7 @@ def main():
                                        ("n2", "mixed", "32/192/0/224")]),
                    "squeue.txt": "\n".join(gres_q) + "\n",
                    "node/n1.txt": remote(full_gpus()),
-                   "node/n2.txt": remote(idle_gpus())})
+                   "node/n2.txt": remote(idle_gpus(node="n2"))})
 
     # 8. 很長的佇列：60 個 job
     long_q = []
@@ -164,7 +192,45 @@ def main():
                                         ("n2", "mixed", "48/176/0/224")]),
                     "squeue.txt": "\n".join(long_q) + "\n",
                     "node/n1.txt": remote(idle_gpus()),
-                    "node/n2.txt": remote(idle_gpus())})
+                    "node/n2.txt": remote(idle_gpus(node="n2"))})
+
+    # 10. 佔著卻閒置：
+    #   n1 的 881（lin）分到 G0-3，只有 G0、G1 有行程在跑，G2、G3 沒有行程也沒在用
+    #   n1 的 882（chen）分到 G4-7，四張都有行程但使用率 0（卡住的 job）
+    #   n2 的 883（hawks）分到 G0-3 在跑；G4-6 沒人用；G7 上有個 root 的非 Slurm 行程
+    #   另外 884 是陣列 job 1006_3（%A 是 1009），在 n2 G4 上，cgroup 寫的是 job_1009
+    held_q = [
+        squeue_line(881, "train-lm", "R", "3:10:00", "20:50:00", 1, 64, "gres/gpu:h200:4", "n1", "1-00:00:00", "lin"),
+        squeue_line(882, "stuck-eval", "R", "5:00:00", "19:00:00", 1, 64, "gres/gpu:4", "n1", "1-00:00:00", "chen"),
+        squeue_line(883, "hawks-mxp", "R", "40:00", "20:00", 1, 64, "gres/gpu:4", "n2", "1:00:00", "hawks"),
+        squeue_line("1006_3", "sweep", "R", "1:00", "59:00", 1, 4, "gres/gpu:1", "n2", "1:00:00", "wu", 1009),
+        squeue_line(885, "waiting", "PD", "0:00", "2:00:00", 1, 32, "gres/gpu:8", "(Resources)", "2:00:00", "lin"),
+    ]
+    n1 = [gpu_line(0, 91, 60000, 55, "520.00"), gpu_line(1, 88, 60000, 54, "515.00"),
+          gpu_line(2, 0, 1, 33, "76.00"), gpu_line(3, 0, 1, 33, "76.00")] + \
+         [gpu_line(i, 0, 30000, 36, "110.00") for i in range(4, 8)]
+    n1p = [proc_line(0, 7100, 60000, "python"), proc_line(1, 7101, 60000, "python")] + \
+          [proc_line(i, 7200 + i, 30000, "eval.py") for i in range(4, 8)]
+    n1j = ["7100 881 lin", "7101 881 lin"] + [f"{7200 + i} 882 chen" for i in range(4, 8)]
+    n2 = [gpu_line(i, 97, 90000, 60, "600.00", node="n2") for i in range(4)] + \
+         [gpu_line(4, 64, 5000, 44, "300.00", node="n2")] + \
+         [gpu_line(i, 0, 1, 31, "75.00", node="n2") for i in range(5, 7)] + \
+         [gpu_line(7, 0, 300, 32, "80.00", node="n2")]
+    n2p = [proc_line(i, 8100 + i, 90000, "mxp", "n2") for i in range(4)] + \
+          [proc_line(4, 8300, 5000, "sweep", "n2"), proc_line(7, 900, 300, "/usr/lib/xorg/Xorg", "n2")]
+    n2j = [f"{8100 + i} 883 hawks" for i in range(4)] + ["8300 1009 wu", "900 - root"]
+    write("idleheld", {**slurm_common(),
+                       "sinfo.txt": sinfo([("n1", "mixed", "128/96/0/224"),
+                                           ("n2", "mixed", "68/156/0/224")]),
+                       "squeue.txt": "\n".join(held_q) + "\n",
+                       "scontrol_jobs.txt": "\n".join([
+                           scontrol_job(881, "lin", "RUNNING", [("n1", "gpu:h200:4(IDX:0-3)")]),
+                           scontrol_job(882, "chen", "RUNNING", [("n1", "gpu:h200:4(IDX:4-7)")]),
+                           scontrol_job(883, "hawks", "RUNNING", [("n2", "gpu:h200:4(IDX:0-3)")]),
+                           scontrol_job(1009, "wu", "RUNNING", [("n2", "gpu:h200:1(IDX:4)")]),
+                           scontrol_job(885, "lin", "PENDING", [])]) + "\n",
+                       "node/n1.txt": remote(n1, n1p, n1j),
+                       "node/n2.txt": remote(n2, n2p, n2j)})
 
     # 9. 連續兩次取樣（CPU% 要兩筆 /proc/stat 才算得出來）
     write("seq", {"hostname.txt": "n1\n",

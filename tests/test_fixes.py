@@ -71,21 +71,22 @@ class RobustGpuFields(unittest.TestCase):
             self.assertIsNone(num(bad), bad)
 
     def test_parse_gpu_line(self):
-        g = self.m.parse_gpu("3, [N/A], , 143771, 41, [N/A]")
-        self.assertEqual(g, {"idx": "3", "util": None, "mem_used": None, "mem_total": 143771.0,
-                             "temp": 41.0, "power": None})
+        g = self.m.parse_gpu("3, GPU-abc, [N/A], , 143771, 41, [N/A]")
+        self.assertEqual(g, {"idx": "3", "uuid": "GPU-abc", "util": None, "mem_used": None,
+                             "mem_total": 143771.0, "temp": 41.0, "power": None,
+                             "jobs": [], "users": []})
         # 欄位不夠也不能炸
         self.assertEqual(self.m.parse_gpu("5")["util"], None)
         self.assertIsNone(self.m.parse_gpu(""))
 
     def test_stats_skip_unknown(self):
-        gpus = [self.m.parse_gpu(x) for x in ("0, [N/A], 1024, 2048, 40, [N/A]",
-                                              "1, 50, 1024, 2048, [N/A], 100")]
+        gpus = [self.m.parse_gpu(x) for x in ("0, GPU-a, [N/A], 1024, 2048, 40, [N/A]",
+                                              "1, GPU-b, 50, 1024, 2048, [N/A], 100")]
         st = self.m.gpu_stats(gpus)
         self.assertEqual(st["util"], 50.0)
         self.assertEqual(st["power"], 100.0)
         self.assertEqual(st["tmax"], 40.0)
-        allna = self.m.gpu_stats([self.m.parse_gpu("0, [N/A], [N/A], [N/A], [N/A], [N/A]")])
+        allna = self.m.gpu_stats([self.m.parse_gpu("0, [N/A], [N/A], [N/A], [N/A], [N/A], [N/A]")])
         self.assertIsNone(allna["util"])
         self.assertIsNone(allna["power"])
         self.assertIsNone(allna["tmax"])
@@ -109,7 +110,7 @@ class RobustGpuFields(unittest.TestCase):
         """整台都讀不到使用率：節點和頂端都顯示 "-"，不是 0%，也不能除以零。"""
         m = self.m
         d = {"cpu_pct": 1.0, "load": [0, 0, 0], "ncpu": 8, "mem_total": 1024, "mem_used": 512,
-             "procs": [], "gpus": [m.parse_gpu("0, [N/A], [N/A], [N/A], [N/A], [N/A]")]}
+             "procs": [], "gpus": [m.parse_gpu("0, GPU-a, [N/A], [N/A], [N/A], [N/A], [N/A]")]}
         m._color = False
         head = "\n".join(m.cluster_header([d], 120))
         self.assertIn("- UTIL", head)
@@ -252,8 +253,9 @@ class UserColumn(unittest.TestCase):
             with self.subTest(lang):
                 out = run("full2x8", "--no-color", "--lang", lang).stdout.splitlines()
                 header = next(ln for ln in out if head in ln)
-                row871 = next(ln for ln in out if " 871 " in ln)
-                row873 = next(ln for ln in out if " 873 " in ln)
+                queue = [ln for ln in out if len(ln.split()) > 2]
+                row871 = next(ln for ln in queue if ln.split()[1] == "871")
+                row873 = next(ln for ln in queue if ln.split()[1] == "873")
                 self.assertIn("hawks", row871)
                 self.assertIn("lin", row873)
                 self.assertEqual(col_of(header, head), col_of(row871, " hawks ") + 1)
@@ -276,8 +278,8 @@ class ProcOverflowString(unittest.TestCase):
         m = load()
         m._color, m._lang = False, lang
         d = {"cpu_pct": 1.0, "load": [0, 0, 0], "ncpu": 8, "mem_total": 1024, "mem_used": 512,
-             "gpus": [m.parse_gpu("0, 90, 1024, 2048, 50, 300")],
-             "procs": [m.parse_proc(f"{100 + i}, 512, /bin/python{i}") for i in range(11)]}
+             "gpus": [m.parse_gpu("0, GPU-a, 90, 1024, 2048, 50, 300")],
+             "procs": [m.parse_proc(f"GPU-a, {100 + i}, 512, /bin/python{i}") for i in range(11)]}
         return "\n".join(m.node_panel("x", d, 80, True, False))
 
     def test_en(self):

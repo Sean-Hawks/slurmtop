@@ -27,6 +27,7 @@ __credits__ = "team-03/Hawks"
 
 import argparse
 import atexit
+import getpass
 import math
 import os
 import re
@@ -38,8 +39,8 @@ import time
 import unicodedata
 from collections import defaultdict, deque
 
-GPU_Q = "index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
-PROC_Q = "pid,used_gpu_memory,process_name"
+GPU_Q = "index,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
+PROC_Q = "gpu_uuid,pid,used_gpu_memory,process_name"
 HIST = 240  # 歷史保留幾筆（sparkline 只取尾巴，示波器用全部）
 
 ANSI = re.compile(r"\033\[[0-9;?]*[a-zA-Z]")
@@ -73,6 +74,7 @@ STRINGS = {
         "footer": "Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval",
         "gpus": "GPUs", "local": "local", "remote": "ssh", "prog": "PROG", "threads": "threads", "no_gpu": "no GPU",
         "stale": "stale %ds", "user": "USER", "more_procs": "… %d more",
+        "idle_tag": "IDLE", "idle_alert": "held but idle", "none_mine": "no GPUs in use by %s",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -84,6 +86,7 @@ STRINGS = {
         "footer": "Ctrl-C 離開  ·  --proc 看行程  ·  --stack 上下排列  ·  -n <秒> 改間隔",
         "gpus": "張", "local": "本機", "remote": "ssh", "prog": "進度", "threads": "執行緒", "no_gpu": "無 GPU",
         "stale": "%d 秒前的資料", "user": "使用者", "more_procs": "…還有 %d 個",
+        "idle_tag": "閒置", "idle_alert": "佔著卻閒置", "none_mine": "%s 目前沒有佔用任何 GPU",
     },
 }
 
@@ -592,8 +595,19 @@ echo '@@gpu'
 command -v nvidia-smi >/dev/null 2>&1 && \
   nvidia-smi --query-gpu={GPU_Q} --format=csv,noheader,nounits 2>/dev/null
 echo '@@proc'
-command -v nvidia-smi >/dev/null 2>&1 && \
-  nvidia-smi --query-compute-apps={PROC_Q} --format=csv,noheader,nounits 2>/dev/null
+apps=$(command -v nvidia-smi >/dev/null 2>&1 && \
+  nvidia-smi --query-compute-apps={PROC_Q} --format=csv,noheader,nounits 2>/dev/null)
+[ -n "$apps" ] && echo "$apps"
+echo '@@jobs'
+# 每個 GPU 行程屬於哪個 Slurm job、哪個使用者：cgroup 路徑裡有 job_<id>
+# （v1 是 /slurm/uid_N/job_N/...，v2 是 .../job_N/step_N/...）。不是 Slurm 起的行程印 "-"。
+echo "$apps" | cut -d, -f2 | tr -d ' ' | sort -u | while read -r pid; do
+  [ -n "$pid" ] && [ -r "/proc/$pid/cgroup" ] || continue
+  job=$(grep -o 'job_[0-9]*' "/proc/$pid/cgroup" 2>/dev/null | head -n 1)
+  job=${{job#job_}}
+  user=$(stat -c %U "/proc/$pid" 2>/dev/null || ps -o user= -p "$pid" 2>/dev/null)
+  echo "$pid ${{job:--}} ${{user:--}}"
+done
 """
 
 
@@ -680,17 +694,112 @@ def fetch(jobs, timeout):
     return out
 
 
-SQUEUE = 'squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l|%u"'
+# %A 是真正的 job id：陣列 job 的 %i 會是 123_4，但 cgroup 裡寫的是 %A
+SQUEUE = 'squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l|%u|%A"'
 SINFO = 'sinfo -h -N -o "%N|%T|%C|%e/%m"'
+# -d 會列出每台節點分到哪幾張卡（GRES=gpu:h200:4(IDX:0-3)），-o 一個 job 一行
+SCONTROL_JOBS = "scontrol -d -o show job"
 
 
 def slurm_query(_=None):
-    """佇列和節點資源。沒有 Slurm 時兩個都是空字串，仍算成功（tuple 本身不是空的）。"""
-    return (sh(SQUEUE, key="squeue").strip(), sh(SINFO, key="sinfo").strip())
+    """佇列、節點資源、GPU 分配。沒有 Slurm 時都是空字串，仍算成功（tuple 本身不是空的）。"""
+    return (sh(SQUEUE, key="squeue").strip(), sh(SINFO, key="sinfo").strip(),
+            sh(SCONTROL_JOBS, key="scontrol_jobs").strip())
+
+
+def parse_queue(raw):
+    """squeue 的輸出切成欄位；欄位不夠的行（格式不對）丟掉。"""
+    return [f for f in (ln.split("|") for ln in (raw or "").splitlines()) if len(f) >= 10]
+
+
+def job_table(queue):
+    """真正的 job id -> {id: 顯示用 id, user, name}。"""
+    t = {}
+    for f in queue:
+        raw = f[11] if len(f) > 11 and f[11] else f[0]
+        t[raw] = {"id": f[0], "user": f[10] if len(f) > 10 else "", "name": f[1]}
+    return t
+
+
+def expand_hostlist(s):
+    """Slurm 的節點清單展開：n[1-3,5],gpu01 -> n1 n2 n3 n5 gpu01（保留前導零）。"""
+    parts, depth, cur = [], 0, ""
+    for ch in s or "":
+        depth += (ch == "[") - (ch == "]")
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    out = []
+    for p in parts:
+        out += _expand_one(p.strip())
+    return [x for x in out if x]
+
+
+def _expand_one(p):
+    m = re.match(r"^(.*?)\[([^\]]+)\](.*)$", p)
+    if not m:
+        return [p]
+    pre, body, post = m.groups()
+    heads = []
+    for r in body.split(","):
+        a, _, b = r.partition("-")
+        if b and a.isdigit() and b.isdigit():
+            heads += [pre + str(i).zfill(len(a)) for i in range(int(a), int(b) + 1)]
+        else:
+            heads.append(pre + a)
+    return [h + t for h in heads for t in _expand_one(post)]
+
+
+def expand_idx(s):
+    """GRES 的 IDX 清單：0-3,5 -> ['0', '1', '2', '3', '5']。"""
+    out = []
+    for r in (s or "").split(","):
+        a, _, b = r.strip().partition("-")
+        if a.isdigit() and b.isdigit():
+            out += [str(i) for i in range(int(a), int(b) + 1)]
+        elif a.isdigit():
+            out.append(a)
+    return out
+
+
+def parse_alloc(text):
+    """scontrol -d -o show job -> ({(節點, GPU 編號): [job id]}, {job id: 使用者})。
+
+    只看 RUNNING 的 job。每個 job 一行，裡面每組 "Nodes=... GRES=gpu:型號:N(IDX:0-3)"
+    是一批節點分到的卡；舊版 Slurm 寫成 GRES_IDX=gpu(IDX:0-3)。這讓「分到卡但卡上
+    沒有任何行程」的 job 也找得到，光靠 nvidia-smi 的 pid 看不到這種情況。
+    """
+    alloc, users = {}, {}
+    for ln in (text or "").splitlines():
+        jid = re.search(r"\bJobId=(\d+)", ln)
+        if not jid or not re.search(r"\bJobState=RUNNING\b", ln):
+            continue
+        jid = jid.group(1)
+        u = re.search(r"\bUserId=([^(\s]+)", ln)
+        if u:
+            users[jid] = u.group(1)
+        # 以每個 " Nodes=" 為界切段，每段找自己的 GRES
+        for chunk in re.split(r"(?:^|\s)(?=Nodes=)", ln)[1:]:
+            nodes = re.match(r"Nodes=(\S+)", chunk).group(1)
+            gres = re.search(r"\bGRES(?:_IDX)?=(\S+)", chunk)
+            if not gres:
+                continue
+            idx = []
+            for m in re.finditer(r"gpu[^,(]*\(IDX:([^)]*)\)", gres.group(1)):
+                idx += expand_idx(m.group(1))
+            for n in expand_hostlist(nodes):
+                for i in idx:
+                    lst = alloc.setdefault((n, i), [])
+                    if jid not in lst:
+                        lst.append(jid)
+    return alloc, users
 
 
 SECTIONS = ("cpu", "load", "mem", "gpu", "proc")
-GPU_FIELDS = ("idx", "util", "mem_used", "mem_total", "temp", "power")   # 順序同 GPU_Q
+GPU_FIELDS = ("idx", "uuid", "util", "mem_used", "mem_total", "temp", "power")  # 順序同 GPU_Q
 
 
 def num(s):
@@ -717,18 +826,44 @@ def parse_gpu(line):
     if not f[0]:
         return None
     f += [""] * (len(GPU_FIELDS) - len(f))
-    g = {"idx": f[0]}
-    for k, v in zip(GPU_FIELDS[1:], f[1:]):
+    g = {"idx": f[0], "uuid": f[1] if f[1] not in ("", "[N/A]") else None}
+    for k, v in zip(GPU_FIELDS[2:], f[2:]):
         g[k] = num(v)
+    g["jobs"], g["users"] = [], []          # 由 snapshot() 依 cgroup 填上
     return g
 
 
 def parse_proc(line):
     """--query-compute-apps 的一行 -> dict。行程名稱可能含逗號，所以剩下的全部接回去。"""
     f = [x.strip() for x in line.split(",")]
-    if len(f) < 3 or not f[0]:
+    if len(f) < 4 or not f[1]:
         return None
-    return {"pid": f[0], "mem": num(f[1]), "name": ",".join(f[2:]).strip()}
+    return {"gpu": f[0], "pid": f[1], "mem": num(f[2]), "name": ",".join(f[3:]).strip(),
+            "job": None, "user": None}
+
+
+def parse_pidjobs(text):
+    """REMOTE 的 jobs 段：每行 "pid job user"，不是 Slurm 起的行程 job 是 "-"。"""
+    out = {}
+    for ln in (text or "").splitlines():
+        f = ln.split()
+        if len(f) >= 3:
+            out[f[0]] = (None if f[1] == "-" else f[1], None if f[2] == "-" else f[2])
+    return out
+
+
+def link_procs(gpus, procs, pidjobs):
+    """把行程的 job / 使用者掛到它所在的那張卡上（用 GPU UUID 對）。"""
+    by_uuid = {g["uuid"]: g for g in gpus if g["uuid"]}
+    for p in procs:
+        p["job"], p["user"] = pidjobs.get(p["pid"], (None, None))
+        g = by_uuid.get(p["gpu"])
+        if not g:
+            continue
+        if p["job"] and p["job"] not in g["jobs"]:
+            g["jobs"].append(p["job"])
+        if p["user"] and p["user"] not in g["users"]:
+            g["users"].append(p["user"])
 
 
 def gpu_stats(gpus):
@@ -804,6 +939,7 @@ def snapshot(node):
         d["mem_total"] = d["mem_used"] = 0
     d["gpus"] = [g for g in map(parse_gpu, parts[3].splitlines()) if g]
     d["procs"] = [p for p in map(parse_proc, parts[4].splitlines()) if p]
+    link_procs(d["gpus"], d["procs"], parse_pidjobs(secs.get("jobs", "")))
     return d
 
 
@@ -875,7 +1011,7 @@ def node_panel(node, d, width, show_proc, sparks, compact=False, age=None):
         line(f" {dim(cyan('G'))}{bold(idx)} {gradbar(u, 12, u >= HOT_UTIL)} "
              f"{fnum(util, '%3.0f%%')}{plume(temp or 0, u)}{sp} "
              f"{fnum(mu, '%5.1fG')} {rgb(*temp_color(temp), temp_s) if temp is not None else grey(temp_s)} "
-             f"{dim(fnum(g['power'], '%4.0fW'))}")
+             f"{dim(fnum(g['power'], '%4.0fW'))}{owner_tag(node, g)}")
 
     if show_proc and d["procs"]:
         for p in d["procs"][:8]:
@@ -889,6 +1025,32 @@ def node_panel(node, d, width, show_proc, sparks, compact=False, age=None):
 
 
 EIGHTHS = " ▁▂▃▄▅▆▇█"
+
+
+def owner_tag(node, g):
+    """GPU 列最後面：[閒置] job 使用者。不是 Slurm 起的行程只顯示（擁有者）。"""
+    jid, user = gpu_owner(node, g)
+    out = ""
+    if idle_held(node, g):
+        out += " " + rgb(241, 196, 15, bold(T("idle_tag")))
+    if jid:
+        out += " " + cyan(jid) + (" " + dim(user) if user else "")
+    elif user:
+        out += " " + dim("(%s)" % user)
+    return out
+
+
+def alert_line(nodes, snaps, width):
+    """頂端警示列：列出有問題的機器；沒有問題就不佔任何一行。"""
+    items = []
+    for node, idx, jid, user in idle_alerts(nodes, snaps):
+        gs = ",".join("G" + i for i in idx)
+        who = " ".join(x for x in (jid, user) if x)
+        items.append(rgb(241, 196, 15, f"{node} {gs} {T('idle_alert')}") + dim(f" ({who})"))
+    if not items:
+        return []
+    mark = "!" if _ascii else "⚠"
+    return [clip("  " + rgb(241, 196, 15, bold(mark)) + " " + dim(" · ").join(items), width)]
 
 
 def scope(vals, width, height=6):
@@ -1218,8 +1380,8 @@ def job_header(narrow):
             f"{rpad(T('nd'), 2)} {rpad(T('cpu'), 4)} {rpad(T('gpu'), 4)}  {T('where')}")
 
 
-def slurm_section(width, max_rows=99, job_cols=1, data=None):
-    """回傳 (畫面行, 沒顯示到的 job 數)。job_cols>1 時佇列會排成多欄。"""
+def slurm_section(width, max_rows=99, job_cols=1, data=None, user=None):
+    """回傳 (畫面行, 沒顯示到的 job 數)。job_cols>1 時佇列會排成多欄；user 只列他的 job。"""
     inner = width - 2
     rows = []
     title = f"{dim(cyan('┤'))} {bold(T('queue'))} {dim(cyan('├'))}"
@@ -1229,12 +1391,13 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None):
         rows.append(V + pad(clip(c, inner), inner) + V)
 
     hidden = 0
-    raw, info = data
-    if not raw:
+    raw, info = data[0], data[1]
+    parsed = parse_queue(raw)
+    if user:
+        parsed = [f for f in parsed if len(f) > 10 and f[10] == user]
+    if not parsed:
         line(dim("  " + T("no_jobs")))
     else:
-        parsed = [ln.split("|") for ln in raw.splitlines()]
-        parsed = [f for f in parsed if len(f) >= 10]
         narrow = job_cols > 1
         colw = inner // job_cols
 
@@ -1271,6 +1434,90 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None):
     return rows, hidden
 
 
+IDLE_UTIL = 5            # 使用率低於這個 % 算閒置
+IDLE_SAMPLES = 30        # 連續幾次取樣都閒置，才算「佔著卻閒置」（--idle-samples）
+
+# 每次刷新由 update_state() 算好，繪圖函式只讀
+_owners = {}             # (節點, GPU 編號) -> [job id]：這張卡屬於哪些 job
+_jobinfo = {}            # job id -> {id: 顯示用 id, user, name}
+_idle = {}               # (節點, GPU 編號) -> (job id 們, 連續閒置次數)
+_idle_n = IDLE_SAMPLES
+
+
+def update_state(nodes, snaps, ages=None, slurm_data=None, idle_n=IDLE_SAMPLES):
+    """每次刷新只呼叫一次：歷史、GPU 屬於哪個 job、閒置計數，都在這裡更新。"""
+    global _idle_n
+    _idle_n = max(1, idle_n)
+    ages = ages or [None] * len(nodes)
+    data = tuple(slurm_data or ()) + ("", "", "")
+    queue = parse_queue(data[0])
+    alloc, alloc_users = parse_alloc(data[2])
+    _jobinfo.clear()
+    for jid, u in alloc_users.items():
+        _jobinfo[jid] = {"id": jid, "user": u, "name": ""}
+    _jobinfo.update(job_table(queue))
+
+    # 這張卡屬於誰：Slurm 的分配（沒有行程也算）+ 卡上行程的 cgroup
+    _owners.clear()
+    for node, d in zip(nodes, snaps):
+        for g in (d or {}).get("gpus", []):
+            jobs = list(alloc.get((node, g["idx"]), []))
+            jobs += [j for j in g["jobs"] if j not in jobs]
+            _owners[(node, g["idx"])] = jobs
+
+    # 閒置計數只看新鮮的取樣；換了 job 就從頭算
+    for node, d, age in zip(nodes, snaps, ages):
+        if not d or age is not None:
+            continue
+        for g in d["gpus"]:
+            key = (node, g["idx"])
+            jobs = tuple(_owners.get(key, ()))
+            u = g["util"]
+            if jobs and u is not None and u < IDLE_UTIL:
+                prev_jobs, n = _idle.get(key, ((), 0))
+                _idle[key] = (jobs, n + 1 if prev_jobs == jobs else 1)
+            else:
+                _idle.pop(key, None)
+    update_history(nodes, snaps, ages)
+
+
+def gpu_owner(node, g):
+    """(job 顯示字串或 None, 使用者或 None)。不是 Slurm job 的行程只回報行程擁有者。"""
+    jobs = _owners.get((node, g["idx"]), [])
+    if jobs:
+        info = _jobinfo.get(jobs[0], {})
+        jid = info.get("id") or jobs[0]
+        if len(jobs) > 1:
+            jid += "+%d" % (len(jobs) - 1)
+        return jid, info.get("user") or None
+    return None, (g["users"][0] if g["users"] else None)
+
+
+def idle_held(node, g):
+    """有 job 佔著、但最近 _idle_n 次取樣使用率都低於 IDLE_UTIL%。"""
+    return _idle.get((node, g["idx"]), ((), 0))[1] >= _idle_n
+
+
+def gpu_users(node, g):
+    """這張卡相關的所有使用者（job 的提交者 + 卡上行程的擁有者），給 --me 用。"""
+    users = [(_jobinfo.get(j) or {}).get("user") for j in _owners.get((node, g["idx"]), [])]
+    return set(u for u in users + g["users"] if u)
+
+
+def idle_alerts(nodes, snaps):
+    """頂端警示用：[(節點, [GPU 編號], job 顯示字串, 使用者)]。"""
+    out = []
+    for node, d in zip(nodes, snaps):
+        groups = {}
+        for g in (d or {}).get("gpus", []):
+            if idle_held(node, g):
+                jid, user = gpu_owner(node, g)
+                groups.setdefault((jid, user), []).append(g["idx"])
+        for (jid, user), idx in groups.items():
+            out.append((node, idx, jid, user))
+    return out
+
+
 def update_history(nodes, snaps, ages=None):
     """每次刷新只呼叫一次，在拿到 snapshot 之後。
 
@@ -1300,6 +1547,29 @@ def update_history(nodes, snaps, ages=None):
         _hist[("all", "gpu")].append(avg)
 
 
+def my_user():
+    try:
+        return getpass.getuser()
+    except Exception:
+        return os.environ.get("USER", "")
+
+
+def only_mine(nodes, snaps, ages, me):
+    """--me：只留 me 佔用（job 是他的，或卡上有他的行程）的 GPU；一張都沒有的節點整台拿掉。"""
+    keep = [], [], []
+    for n, d, a in zip(nodes, snaps, ages):
+        if not d:
+            continue
+        gpus = [g for g in d["gpus"] if me in gpu_users(n, g)]
+        if not gpus:
+            continue
+        uuids = set(g["uuid"] for g in gpus)
+        keep[0].append(n)
+        keep[1].append(dict(d, gpus=gpus, procs=[p for p in d["procs"] if p["gpu"] in uuids]))
+        keep[2].append(a)
+    return keep
+
+
 def render(nodes, opt=None, **kw):
     """取樣、更新狀態、畫一整個畫面。opt 是 parse_args() 的結果；測試可以只給 kw。"""
     opt = opt or options(**kw)
@@ -1315,8 +1585,12 @@ def render(nodes, opt=None, **kw):
     got = fetch(jobs, opt.node_timeout)
     snaps = [got[("node", n)][0] for n in nodes]
     ages = [got[("node", n)][1] for n in nodes]
-    slurm_data = got[("slurm",)][0] or ("", "")
-    update_history(nodes, snaps, ages)
+    slurm_data = got[("slurm",)][0] or ("", "", "")
+    update_state(nodes, snaps, ages, slurm_data, opt.idle_samples)
+    head_snaps = snaps
+    me = my_user() if opt.me else None
+    if me:                                  # --me：只留自己佔用的 GPU 和自己的 job
+        nodes, snaps, ages = only_mine(nodes, snaps, ages, me)
 
     if not fit:
         # 預設：每張卡的明細與整個佇列都完整顯示，畫面長一點沒關係。
@@ -1326,7 +1600,8 @@ def render(nodes, opt=None, **kw):
                 break
             frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
                               sparks, compact=False, job_cols=jcols,
-                              slurm_data=slurm_data, want_qr=want_qr, ages=ages)
+                              slurm_data=slurm_data, want_qr=want_qr, ages=ages,
+                              me=me, head_snaps=head_snaps)
             if len(frame) <= lines:
                 break
         spare = lines - len(frame) - 1          # 下面還空著就把示波器拉高
@@ -1334,7 +1609,7 @@ def render(nodes, opt=None, **kw):
             frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr,
-                              scope_h=6 + spare, ages=ages)
+                              scope_h=6 + spare, ages=ages, me=me, head_snaps=head_snaps)
         return "\n".join(frame)
 
     # --fit：硬塞進一頁。依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄 -> 裁 job。
@@ -1345,7 +1620,8 @@ def render(nodes, opt=None, **kw):
             continue
         frame, hidden = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
                                sp, compact, jcols, slurm_data=slurm_data,
-                               want_qr=want_qr and not compact, ages=ages)
+                               want_qr=want_qr and not compact, ages=ages,
+                               me=me, head_snaps=head_snaps)
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
@@ -1368,7 +1644,8 @@ MIN_PANEL_W = 49          # 一個節點面板至少要這麼寬才擺得下
 
 
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
-           job_cols=1, slurm_data=("", ""), want_qr=False, scope_h=6, ages=None):
+           job_cols=1, slurm_data=("", ""), want_qr=False, scope_h=6, ages=None,
+           me=None, head_snaps=None):
     # 版面填滿整個終端機：先決定一排放幾個面板，再把寬度平均分掉，
     # 而不是用固定寬度、右邊留一大塊空白。
     total_w = max(MIN_PANEL_W, cols - 1)
@@ -1381,9 +1658,16 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
     panels = [node_panel(n, d, panel_w, show_proc, sparks, compact, age)
               for n, d, age in zip(nodes, snaps, ages)]
 
-    out = cluster_header(snaps, total_w)
+    # 頂端的總覽永遠看整個叢集（--me 也一樣），下面的面板才是篩過的
+    out = cluster_header(head_snaps if head_snaps is not None else snaps, total_w)
+    out += alert_line(nodes, snaps, total_w)
     if not compact:
         out += scope_section(total_w, scope_h)
+    if me and not nodes:
+        panels = [[TL + H * (total_w - 2) + TR,
+                   V + pad(dim("  " + T("none_mine") % me), total_w - 2) + V,
+                   BL + H * (total_w - 2) + BR]]
+        percol = 1
     for start in range(0, len(panels), percol):
         group = panels[start:start + percol]
         h = max(len(p) for p in group)
@@ -1398,17 +1682,17 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
         # QR 區塊固定 20 行高，佇列比它矮的話排多欄一行都省不到，
         # 只會把欄位截斷。這種情況一律用單欄，看得清楚。
         one, hidden_one = slurm_section(total_w - qw, max_rows=max(1, budget),
-                                        job_cols=1, data=slurm_data)
+                                        job_cols=1, data=slurm_data, user=me)
         # QR 旁邊剩下的寬度不夠每欄放下完整的窄版 job 列時，也維持單欄
         too_narrow = (total_w - qw - 2) // job_cols < JOB_FIXED_NARROW + 4
         if len(one) <= len(qr_panel(0)) or job_cols == 1 or too_narrow:
             sec, hidden = one, hidden_one
         else:
             sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
-                                        job_cols=job_cols, data=slurm_data)
+                                        job_cols=job_cols, data=slurm_data, user=me)
     else:
         sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
-                                    job_cols=job_cols, data=slurm_data)
+                                    job_cols=job_cols, data=slurm_data, user=me)
     if show_qr_panel:
         qr = qr_panel(len(sec))
         # QR 比佇列高的話，把佇列的框往下拉齊，不要在左邊留一塊空洞
@@ -1475,6 +1759,11 @@ def parse_args(argv=None):
                     help="wait at most this long for each node per refresh; a node that "
                          "misses it keeps its last reading, marked stale (default: %g)"
                          % NODE_TIMEOUT)
+    ap.add_argument("--me", action="store_true",
+                    help="show only your own jobs and the GPUs they hold")
+    ap.add_argument("--idle-samples", type=int, default=IDLE_SAMPLES, metavar="N",
+                    help="flag a GPU held by a job whose utilisation stayed below "
+                         "%d%%%% for N samples in a row (default: %d)" % (IDLE_UTIL, IDLE_SAMPLES))
     ap.add_argument("-V", "--version", action="version",
                     version=f"slurmtop {__version__} - credited by {__credits__}")
     return ap.parse_args(argv)

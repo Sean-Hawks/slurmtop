@@ -24,6 +24,8 @@ CASES = [
     ("unreachable", "unreachable", ["--no-color"], 150, 60),
     ("na_fields", "na_fields", ["--no-color", "--proc"], 150, 60),
     ("gres", "gres", ["--no-color"], 150, 50),
+    ("idleheld", "idleheld", ["--no-color", "--idle-samples", "1"], 150, 45),
+    ("idleheld_me", "idleheld", ["--no-color", "--me", "--idle-samples", "1"], 150, 40),
     ("hang", "hang", ["--no-color", "--node-timeout", "0.3"], 150, 50),
     ("nogpu", "nogpu", ["--no-color", "--nodes", "mac,cpu1"], 100, 40),
     ("longq", "longq", ["--no-color"], 150, 50),

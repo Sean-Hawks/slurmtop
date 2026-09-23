@@ -1,0 +1,5 @@
+JobId=881 JobName=job UserId=lin(1001) GroupId=lin(1001) Priority=1 JobState=RUNNING Reason=None NumNodes=1 TresPerNode=gres/gpu:8 Nodes=n1 CPU_IDs=0-31 Mem=0 GRES=gpu:h200:4(IDX:0-3)
+JobId=882 JobName=job UserId=chen(1001) GroupId=chen(1001) Priority=1 JobState=RUNNING Reason=None NumNodes=1 TresPerNode=gres/gpu:8 Nodes=n1 CPU_IDs=0-31 Mem=0 GRES=gpu:h200:4(IDX:4-7)
+JobId=883 JobName=job UserId=hawks(1001) GroupId=hawks(1001) Priority=1 JobState=RUNNING Reason=None NumNodes=1 TresPerNode=gres/gpu:8 Nodes=n2 CPU_IDs=0-31 Mem=0 GRES=gpu:h200:4(IDX:0-3)
+JobId=1009 JobName=job UserId=wu(1001) GroupId=wu(1001) Priority=1 JobState=RUNNING Reason=None NumNodes=1 TresPerNode=gres/gpu:8 Nodes=n2 CPU_IDs=0-31 Mem=0 GRES=gpu:h200:1(IDX:4)
+JobId=885 JobName=job UserId=lin(1001) GroupId=lin(1001) Priority=1 JobState=PENDING Reason=None NumNodes=1 TresPerNode=gres/gpu:8

@@ -1,0 +1,5 @@
+881|train-lm|R|3:10:00|20:50:00|1|64|gres/gpu:h200:4|n1|1-00:00:00|lin|881
+882|stuck-eval|R|5:00:00|19:00:00|1|64|gres/gpu:4|n1|1-00:00:00|chen|882
+883|hawks-mxp|R|40:00|20:00|1|64|gres/gpu:4|n2|1:00:00|hawks|883
+1006_3|sweep|R|1:00|59:00|1|4|gres/gpu:1|n2|1:00:00|wu|1009
+885|waiting|PD|0:00|2:00:00|1|32|gres/gpu:8|(Resources)|2:00:00|lin|885

@@ -141,6 +141,8 @@ slurmtop --once             # print one frame and exit (good for chat/logs)
 slurmtop --nodes a,b,c      # explicit node list, skip Slurm discovery
 slurmtop --nodes localhost  # single machine, no SSH, no Slurm needed
 slurmtop --proc             # also list the processes on each GPU
+slurmtop --me               # only your own jobs and the GPUs they hold
+slurmtop --idle-samples 15  # flag held-but-idle GPUs after 15 samples (default 30)
 slurmtop --stack            # force vertical layout
 slurmtop --fit              # squeeze into one screen instead of showing everything
 slurmtop --no-color         # plain text
@@ -175,12 +177,38 @@ rest are read over SSH, one round trip each per refresh.
 | `GPUs ▉▉▁▁▁▁▁▁ │ ▉▉▉▉▉▉▉▉` | one cell per GPU in the cluster, grouped by node — the whole fleet at a glance; `-` is a GPU whose utilisation cannot be read (MIG) |
 | `-` in a GPU row | nvidia-smi reported `[N/A]` or nothing for that field |
 | `stale 12s` in a node title | that node missed the refresh deadline (`--node-timeout`); its last reading is shown until it answers again, for up to a minute, after which it is shown as unreachable |
+| `871 hawks` at the end of a GPU row | the Slurm job holding that GPU and who submitted it; `871+1` means two jobs share it |
+| `(root)` at the end of a GPU row | a process that is not part of any Slurm job, and its owner |
+| `IDLE` in a GPU row | held by a job but below 5 % utilisation for the last `--idle-samples` refreshes |
+| `⚠ n1 G2,G3 held but idle (881 lin)` | the same, collected in one line under the header; the line is absent when there is nothing to report |
 | `● run` / `◌ pend` | Slurm job state |
 | `USER` | who submitted the job |
 | `PROG ███░░░░░` | how much of the job's time limit is used up — turns red as it approaches the wall |
 | `2h45m`, `20m00s`, `3d02h` | durations, always with units |
 | header line | cluster totals: mean GPU utilisation, busy GPU count, VRAM, power draw, hottest GPU |
 | panel border | tinted by that node's average GPU load |
+
+### Which job owns which GPU
+
+Two sources are combined, so a GPU is attributed even when nothing is
+running on it:
+
+- On each node, for every process nvidia-smi reports, `REMOTE` reads
+  `/proc/<pid>/cgroup` and picks out `job_<id>` (works for cgroup v1
+  `/slurm/uid_N/job_N/...` and v2 `.../job_N/step_N/...`). Processes outside
+  any Slurm job are shown with their owner instead.
+- On the machine running slurmtop, `scontrol -d -o show job` lists which GPU
+  indices (`GRES=gpu:h200:4(IDX:0-3)`) each running job was given on each
+  node. This is what catches a job that allocated GPUs and left them empty.
+
+A GPU counts as *held but idle* when some job owns it and its utilisation has
+stayed below 5 % for `--idle-samples` refreshes in a row (default 30, one
+minute at the default interval). The count restarts whenever the GPU is used,
+changes hands, or cannot be read.
+
+`--me` keeps only the jobs you submitted and the GPUs they hold (or that run
+a process you own); nodes where you hold nothing are left out. The header
+still summarises the whole cluster.
 
 ### Animations
 

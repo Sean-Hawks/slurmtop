@@ -1,6 +1,6 @@
-1001|old-style|R|1:00:00|1:00:00|1|32|gres:gpu:8|n1|2:00:00|hawks
-1002|new-style|R|30:00|30:00|1|32|gres/gpu:8|n2|1:00:00|lin
-1003|typed|PD|0:00|4:00:00|1|32|gres/gpu:h200:8|(Resources)|4:00:00|chen
-1004|old-typed|PD|0:00|1:00:00|1|16|gres:gpu:h200:2|(Priority)|1:00:00|chen
-1005|cpu-only|PD|0:00|1:00:00|1|4|N/A|(Priority)|1:00:00|wu
-1006_3|array|PD|0:00|1:00:00|1|4|gres/gpu:1|(Priority)|1:00:00|wu
+1001|old-style|R|1:00:00|1:00:00|1|32|gres:gpu:8|n1|2:00:00|hawks|1001
+1002|new-style|R|30:00|30:00|1|32|gres/gpu:8|n2|1:00:00|lin|1002
+1003|typed|PD|0:00|4:00:00|1|32|gres/gpu:h200:8|(Resources)|4:00:00|chen|1003
+1004|old-typed|PD|0:00|1:00:00|1|16|gres:gpu:h200:2|(Priority)|1:00:00|chen|1004
+1005|cpu-only|PD|0:00|1:00:00|1|4|N/A|(Priority)|1:00:00|wu|1005
+1006_3|array|PD|0:00|1:00:00|1|4|gres/gpu:1|(Priority)|1:00:00|wu|1009
