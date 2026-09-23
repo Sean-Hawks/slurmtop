@@ -254,6 +254,19 @@ def main():
                      "node/n2.txt": remote(n2a),
                      "node/n4.txt": remote(idle_gpus(node="n4"))})
 
+    # 12. 16 台節點：面板放不下，自動改成密集檢視。gpu07 連不上。
+    names = ["gpu%02d" % i for i in range(1, 17)]
+    many = {**slurm_common(names), "hostname.txt": "gpu01\n",
+            "sinfo.txt": sinfo([(n, "mixed", "112/112/0/224") for n in names]),
+            "squeue.txt": squeue_line(990, "big-sweep", "R", "1:00:00", "3:00:00", 8, 1792,
+                                      "gres/gpu:8", "gpu[01-08]", "4:00:00", "hawks") + "\n"}
+    for k, n in enumerate(names):
+        if n == "gpu07":
+            continue
+        many["node/%s.txt" % n] = remote(full_gpus(node=n) if k % 3 == 0 else idle_gpus(node=n),
+                                         load="%d.0 5.0 4.0" % k)
+    write("many", many)
+
     # 9. 連續兩次取樣（CPU% 要兩筆 /proc/stat 才算得出來）
     write("seq", {"hostname.txt": "n1\n",
                   "node/n1.1.txt": remote(cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",

@@ -145,6 +145,7 @@ slurmtop --proc             # also list the processes on each GPU
 slurmtop --me               # only your own jobs and the GPUs they hold
 slurmtop --idle-samples 15  # flag held-but-idle GPUs after 15 samples (default 30)
 slurmtop --stack            # force vertical layout
+slurmtop --dense            # one line per node (automatic when panels would not fit)
 slurmtop --fit              # squeeze into one screen instead of showing everything
 slurmtop --no-color         # plain text
 slurmtop --flair            # turn on every animation, plus the boot splash
@@ -237,6 +238,12 @@ The layout fills the terminal: node panels split the full width evenly rather
 than sitting at a fixed size with dead space to the right, the queue takes
 the full width (or whatever is left beside the QR panel with `--qr-panel`),
 and spare vertical space goes to the LOAD scope. Sparklines need panels at least 58 columns wide.
+
+With many nodes the per-node panels stop fitting, so once they would take
+more than the terminal height minus 12 lines the node section switches to a
+dense table — one line per node with CPU, memory, GPU count and a per-GPU
+strip, mean utilisation, hottest GPU, power, disk, network and any stale or
+idle flags, every column aligned. `--dense` asks for it regardless of size.
 
 If you would rather have a single screen that never scrolls, use `--fit`. That
 mode gives up detail in order — sparklines, then per-GPU rows collapsed to one

@@ -38,8 +38,8 @@
 │ G7 ▕░░░░░░░░░░░░▏   0%    0.0G 31°   82W      │
 ╰───────────────────────────────────────────────╯
 ╭┤ Slurm queue ├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│     JOB NAME      USER   STATE  ELAPSED PROG  LEFT   GPU WHERE              JOB NAME      USER   STATE  ELAPSED PROG  LEFT   GPU WHERE          │
-│     886 notebook  wu     ● run  2h00m   █░░░░ 6h00m   1 n2                                                                                      │
+│      JOB  NAME        USER     STATE   ELAPSED   PROG     LEFT       N  CPU  GPU  WHERE                                                         │
+│      886  notebook    wu       ● run   2h00m     ██░░░░░░ 6h00m      1    8    1  n2                                                            │
 │ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │
 │  n1         mixed    CPU ▕█░░░░░░░░░▏ 32/224 idle 192   RAM free 725 GiB                                                                        │
 │  n2         mixed    CPU ▕░░░░░░░░░░▏ 8/224 idle 216   RAM free 725 GiB                                                                         │

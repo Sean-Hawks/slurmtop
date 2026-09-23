@@ -1,0 +1,16 @@
+gpu01
+gpu02
+gpu03
+gpu04
+gpu05
+gpu06
+gpu07
+gpu08
+gpu09
+gpu10
+gpu11
+gpu12
+gpu13
+gpu14
+gpu15
+gpu16

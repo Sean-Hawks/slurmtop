@@ -228,5 +228,71 @@ class AlertLine(unittest.TestCase):
         self.assertEqual(out[4].strip(), "⚠ n2 stale 12s")
 
 
+def col(line, needle):
+    import unicodedata
+    i = line.index(needle)
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in line[:i])
+
+
+class DenseView(unittest.TestCase):
+    """第 3 步第 4 項：節點多到放不下（或 --dense）時一台一行。"""
+
+    def node_rows(self, out):
+        lines = out.splitlines()
+        start = next(i for i, ln in enumerate(lines) if "NODES" in ln or "節點" in ln)
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("╰"))
+        return lines[start + 1:end]
+
+    def test_auto_when_too_many(self):
+        out = run("many", "--no-color", cols=150, lines=45).stdout
+        self.assertNotIn("NODE gpu01", out)               # 沒有一般的節點面板
+        rows = self.node_rows(out)
+        self.assertEqual(len(rows), 16)
+        self.assertIn("unreachable", rows[6])            # gpu07
+        cpu_cols = set(col(r, "CPU") for r in rows if "CPU" in r)
+        self.assertEqual(len(cpu_cols), 1)                # 各欄對齊
+        self.assertEqual(len(set(col(r, "DSK") for r in rows if "DSK" in r)), 1)
+
+    def test_not_dense_when_it_fits(self):
+        for scn in ("full2x8", "idle2x8"):
+            out = run(scn, "--no-color", cols=150, lines=45).stdout
+            self.assertIn("NODE n1", out)
+            self.assertNotIn("NODES", out)
+
+    def test_flag(self):
+        out = run("idleheld", "--no-color", "--dense", "--idle-samples", "1").stdout
+        rows = self.node_rows(out)
+        self.assertEqual(len(rows), 2)
+        self.assertIn("IDLE 6", rows[0])                  # n1 有 6 張佔著卻閒置
+        self.assertIn("GPU 2/8", rows[0])
+
+    def test_tall_terminal_goes_back_to_panels(self):
+        out = run("many", "--no-color", cols=150, lines=200).stdout
+        self.assertIn("NODE gpu01", out)
+
+    def test_threshold(self):
+        m = load()
+        with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": fixture("full2x8")}):
+            snaps = [m.snapshot("n1"), m.snapshot("n2")]
+        h = m.panels_height(["n1", "n2"], snaps, None, 150, False, False, True)
+        opt = m.options()
+        self.assertFalse(m.want_dense(opt, ["n1", "n2"], snaps, None, 150, h + m.DENSE_RESERVE, True))
+        self.assertTrue(m.want_dense(opt, ["n1", "n2"], snaps, None, 150, h + m.DENSE_RESERVE - 1, True))
+        self.assertFalse(m.want_dense(opt, ["n1"], snaps[:1], None, 150, 5, True))   # 只有一台不算
+        self.assertTrue(m.want_dense(m.options(dense=True), ["n1"], snaps[:1], None, 150, 99, True))
+
+    def test_zh_and_nogpu(self):
+        out = run("nogpu", "--no-color", "--dense", "--lang", "zh", "--nodes", "mac,cpu1,ghost",
+                  cols=100).stdout
+        rows = self.node_rows(out)
+        self.assertIn("無 GPU", rows[0])
+        self.assertIn("連不上", rows[2])
+
+    def test_short_queue_stays_single_column(self):
+        out = run("many", "--no-color", cols=150, lines=45).stdout
+        header = next(ln for ln in out.splitlines() if "USER" in ln)
+        self.assertEqual(header.count("USER"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

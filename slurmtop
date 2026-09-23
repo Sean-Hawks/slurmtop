@@ -76,7 +76,7 @@ STRINGS = {
         "stale": "stale %ds", "user": "USER", "more_procs": "… %d more",
         "idle_tag": "IDLE", "idle_alert": "held but idle", "none_mine": "no GPUs in use by %s",
         "alert_down": "unreachable", "alert_hot": "hot %.0f°C", "alert_disk": "disk %.0f%%",
-        "alert_more": "+%d more",
+        "alert_more": "+%d more", "nodes": "NODES",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -90,7 +90,7 @@ STRINGS = {
         "stale": "%d 秒前的資料", "user": "使用者", "more_procs": "…還有 %d 個",
         "idle_tag": "閒置", "idle_alert": "佔著卻閒置", "none_mine": "%s 目前沒有佔用任何 GPU",
         "alert_down": "斷線", "alert_hot": "過熱 %.0f°C", "alert_disk": "磁碟 %.0f%%",
-        "alert_more": "還有 %d 項",
+        "alert_more": "還有 %d 項", "nodes": "節點",
     },
 }
 
@@ -1458,12 +1458,21 @@ def cluster_header(snaps, width):
         + (rgb(*temp_color(tmax), '%d°C' % tmax) if tmax is not None else grey("-"))
         + (("  " + blink("▲ THERMAL", (231, 76, 60)))
            if tmax is not None and tmax >= ALERT_TEMP else ""),
-        f"{lab('GRID')} " + ("  " + dim("│") + "  ").join(
-            gpu_strip(d["gpus"]) for d in snaps if d and d["gpus"]),
+        f"{lab('GRID')} " + grid_strips(snaps, width - 27),
     ]
     for i in range(3):
         out.append(clip(pad(gauge[i], 21) + tele[i], width))
     return out
+
+
+def grid_strips(snaps, width):
+    """每台一段燈號，中間用 │ 隔開；節點多到放不下時改用單一空白隔開。"""
+    strips = [gpu_strip(d["gpus"]) for d in snaps if d and d["gpus"]]
+    for sep in ("  " + dim("│") + "  ", " ", ""):
+        line = sep.join(strips)
+        if vlen(line) <= width:
+            break
+    return line
 
 
 def progress(elapsed, limit, width=8):
@@ -1758,25 +1767,32 @@ def render(nodes, opt=None, **kw):
     me = my_user() if opt.me else None
     if me:                                  # --me：只留自己佔用的 GPU 和自己的 job
         nodes, snaps, ages = only_mine(nodes, snaps, ages, me)
+    dense = want_dense(opt, nodes, snaps, ages, cols, lines, sparks)
 
     if not fit:
         # 預設：每張卡的明細與整個佇列都完整顯示，畫面長一點沒關係。
         # 佇列先用單欄；若這樣塞不進視窗，改多欄試著擠進去，但絕不收合或裁切。
+        # 多欄沒有比較矮就不要用（例如佇列很短、是節點資源那段太長）
+        best = None
         for jcols in (1, 2, 3):
             if jcols > 1 and cols < JOB_FIXED_NARROW * jcols:
                 break
             frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr, ages=ages,
-                              me=me, head_snaps=head_snaps)
+                              me=me, head_snaps=head_snaps, dense=dense)
+            if best is None or len(frame) < len(best[0]):
+                best = (frame, jcols)
             if len(frame) <= lines:
                 break
+        frame, jcols = best
         spare = lines - len(frame) - 1          # 下面還空著就把示波器拉高
         if spare > 0:
             frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr,
-                              scope_h=6 + spare, ages=ages, me=me, head_snaps=head_snaps)
+                              scope_h=6 + spare, ages=ages, me=me, head_snaps=head_snaps,
+                              dense=dense)
         return "\n".join(frame)
 
     # --fit：硬塞進一頁。依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄 -> 裁 job。
@@ -1788,7 +1804,7 @@ def render(nodes, opt=None, **kw):
         frame, hidden = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
                                sp, compact, jcols, slurm_data=slurm_data,
                                want_qr=want_qr and not compact, ages=ages,
-                               me=me, head_snaps=head_snaps)
+                               me=me, head_snaps=head_snaps, dense=dense)
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
@@ -1808,22 +1824,108 @@ def scope_section(width, height=6):
 
 
 MIN_PANEL_W = 49          # 一個節點面板至少要這麼寬才擺得下
+DENSE_RESERVE = 12        # 節點面板比「畫面高度 - 這麼多行」還高時，自動改成密集檢視
+
+
+def _layout(cols, n, force_stack):
+    """(總寬, 一排幾個面板, 面板寬)。面板平均分掉整個寬度，不留右邊一大塊空白。"""
+    total_w = max(MIN_PANEL_W, cols - 1)
+    percol = 1 if force_stack else max(1, min(n, total_w // MIN_PANEL_W))
+    panel_w = total_w // percol
+    return panel_w * percol, percol, panel_w
+
+
+def panels_height(nodes, snaps, ages, cols, show_proc, force_stack, sparks):
+    """一般檢視下所有節點面板加起來有幾行高。"""
+    _, percol, panel_w = _layout(cols, len(nodes), force_stack)
+    hs = [len(node_panel(n, d, panel_w, show_proc, sparks and panel_w >= 58, False, a))
+          for n, d, a in zip(nodes, snaps, ages or [None] * len(nodes))]
+    return sum(max(hs[i:i + percol]) for i in range(0, len(hs), percol))
+
+
+def want_dense(opt, nodes, snaps, ages, cols, lines, sparks):
+    """--dense，或節點多到面板放不下畫面時（至少兩台）。"""
+    if opt.dense:
+        return True
+    return len(nodes) > 1 and panels_height(nodes, snaps, ages, cols, opt.proc, opt.stack,
+                                            sparks) > lines - DENSE_RESERVE
+
+
+def dense_fields(node, d, age):
+    """密集檢視的一列，切成欄位（對齊由 dense_panel 處理）。連不上的節點只有三欄。"""
+    dot = "o" if _ascii else "◉"
+    name = bold(cyan(node))
+    if not d:
+        return [name, rgb(*RED, dot), rgb(*RED, T("unreachable"))]
+    has_gpu = bool(d["gpus"])
+    st = gpu_stats(d["gpus"])
+    load = (st["util"] or 0.0) if has_gpu else d["cpu_pct"]
+    mem_pct = d["mem_used"] / d["mem_total"] * 100 if d["mem_total"] else 0
+    f = [name, rgb(*heat(load), dot),
+         f"{dim(cyan('CPU'))} {gradbar(d['cpu_pct'], 6)} {d['cpu_pct']:3.0f}%",
+         f"{dim(cyan('MEM'))} {gradbar(mem_pct, 6)} {mem_pct:3.0f}%"]
+    if has_gpu:
+        tmax, pw = st["tmax"], st["power"]
+        f += [f"{dim(cyan('GPU'))} {st['busy']}/{st['n']} {gpu_strip(d['gpus'])}",
+              bold(fnum(st["util"], "%3.0f%%")),
+              rgb(*temp_color(tmax), "%.0f°C" % tmax) if tmax is not None else grey("-"),
+              mag(fnum(pw / 1000 if pw is not None else None, "%.1fkW"))]
+    else:
+        f += [dim(T("no_gpu")), "", "", ""]
+    dk = d.get("disk")
+    if dk:
+        txt = "%3.0f%%" % dk["pct"]
+        f.append(f"{dim(cyan('DSK'))} " + (rgb(*RED, bold(txt)) if dk["pct"] >= DISK_ALERT else txt))
+    else:
+        f.append(f"{dim(cyan('DSK'))} {grey('-')}")
+    net = d.get("net")
+    down, up = ("v", "^") if _ascii else ("↓", "↑")
+    f.append(f"{dim(cyan('NET'))} " + (f"{down}{fmt_bytes(net[0], '/s'):>8} {up}{fmt_bytes(net[1], '/s'):>8}"
+                                        if net else grey("-")))
+    flags = []
+    if age is not None:
+        flags.append(rgb(*YELLOW, T("stale") % age))
+    idle = sum(1 for g in d["gpus"] if idle_held(node, g))
+    if idle:
+        flags.append(rgb(*YELLOW, bold(T("idle_tag"))) + " %d" % idle)
+    f.append(" ".join(flags))
+    return f
+
+
+def dense_panel(nodes, snaps, ages, width):
+    """密集檢視：一台一行，各欄依整張表最寬的那格對齊。"""
+    inner = width - 2
+    title = (f"{dim(cyan('┤'))} {bold(T('nodes'))} {dim(str(len(nodes)))} {dim(cyan('├'))}")
+    rows = [TL + title + H * max(0, inner - vlen(title)) + TR]
+    table = [dense_fields(n, d, a) for n, d, a in zip(nodes, snaps, ages or [None] * len(nodes))]
+    ncol = max(len(r) for r in table)
+    full = [r for r in table if len(r) == ncol] or table
+    widths = [max(vlen(r[i]) for r in full) for i in range(ncol)]
+    widths[0] = max(vlen(r[0]) for r in table)
+    for r in table:
+        # 最後一格不補空白；連不上的那列欄位比較少，訊息直接接在燈號後面
+        cells = [pad(c, widths[i]) for i, c in enumerate(r[:-1])] + [r[-1]]
+        text = " " + "  ".join(cells)
+        rows.append(V + pad(clip(text.rstrip(), inner), inner) + V)
+    rows.append(BL + H * inner + BR)
+    return rows
 
 
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
            job_cols=1, slurm_data=("", ""), want_qr=False, scope_h=6, ages=None,
-           me=None, head_snaps=None):
+           me=None, head_snaps=None, dense=False):
     # 版面填滿整個終端機：先決定一排放幾個面板，再把寬度平均分掉，
     # 而不是用固定寬度、右邊留一大塊空白。
-    total_w = max(MIN_PANEL_W, cols - 1)
-    percol = 1 if force_stack else max(1, min(len(nodes), total_w // MIN_PANEL_W))
-    panel_w = total_w // percol
-    total_w = panel_w * percol            # 對齊，避免右邊差一兩格
+    total_w, percol, panel_w = _layout(cols, len(nodes), force_stack or dense)
     sparks = sparks and panel_w >= 58
 
     ages = ages or [None] * len(nodes)
-    panels = [node_panel(n, d, panel_w, show_proc, sparks, compact, age)
-              for n, d, age in zip(nodes, snaps, ages)]
+    if dense and nodes:                    # 密集檢視：一台一行，整個寬度一個面板
+        total_w = panel_w = max(MIN_PANEL_W, cols - 1)
+        panels = [dense_panel(nodes, snaps, ages, total_w)]
+    else:
+        panels = [node_panel(n, d, panel_w, show_proc, sparks, compact, age)
+                  for n, d, age in zip(nodes, snaps, ages)]
 
     # 頂端的總覽永遠看整個叢集（--me 也一樣），下面的面板才是篩過的
     out = cluster_header(head_snaps if head_snaps is not None else snaps, total_w)
@@ -1930,6 +2032,9 @@ def parse_args(argv=None):
                     help="wait at most this long for each node per refresh; a node that "
                          "misses it keeps its last reading, marked stale (default: %g)"
                          % NODE_TIMEOUT)
+    ap.add_argument("--dense", action="store_true",
+                    help="one summary line per node (automatic when the node panels "
+                         "would not fit on the screen)")
     ap.add_argument("--me", action="store_true",
                     help="show only your own jobs and the GPUs they hold")
     ap.add_argument("--idle-samples", type=int, default=IDLE_SAMPLES, metavar="N",
