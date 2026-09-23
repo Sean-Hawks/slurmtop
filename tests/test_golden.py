@@ -50,8 +50,6 @@ class GoldenFrames(unittest.TestCase):
             with self.subTest(case[0]):
                 self.check(*case)
 
-    # TODO(bug 7)：sinfo 那行用 f"{bold(n):<10}" 對帶色碼的字串對齊，彩色時會錯位
-    @unittest.expectedFailure
     def test_color_matches_plain(self):
         """加上顏色後，扣掉色碼的可見文字必須跟 --no-color 一模一樣（對齊不能被色碼弄歪）。
 

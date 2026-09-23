@@ -1250,7 +1250,8 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None):
             free_mb = (m.split("/") + ["0"])[0]
             free_gib = int(free_mb) / 1024 if free_mb.isdigit() else 0
             pct = 100 * int(alloc) / int(total) if total.isdigit() and int(total) else 0
-            line(f"  {bold(n):<10} {state:<8} CPU {gradbar(pct, 10)} {alloc}/{total} "
+            # 對齊一律用 pad()：f"{bold(n):<10}" 會把色碼算進寬度，彩色時整行錯位
+            line(f"  {pad(bold(n), 10)} {pad(state, 8)} CPU {gradbar(pct, 10)} {alloc}/{total} "
                  f"{dim(T('idle') + ' ' + idle)}   "
                  f"{dim('RAM ' + T('free') + ' %.0f GiB' % free_gib)}")
     rows.append(BL + H * inner + BR)
