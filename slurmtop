@@ -1578,11 +1578,13 @@ def job_header(narrow):
             f"{rpad(T('nd'), 2)} {rpad(T('cpu'), 4)} {rpad(T('gpu'), 4)}  {T('where')}")
 
 
-def slurm_section(width, max_rows=99, job_cols=1, data=None, user=None):
-    """回傳 (畫面行, 沒顯示到的 job 數)。job_cols>1 時佇列會排成多欄；user 只列他的 job。"""
+def slurm_section(width, max_rows=99, job_cols=1, data=None, user=None, age=None):
+    """回傳 (畫面行, 沒顯示到的 job 數)。job_cols>1 時佇列會排成多欄；user 只列他的 job；
+    age 不是 None 表示 squeue 這次沒回應，顯示的是舊資料。"""
     inner = width - 2
     rows = []
-    title = f"{dim(cyan('┤'))} {bold(T('queue'))} {dim(cyan('├'))}"
+    stale = (" " + rgb(*YELLOW, T("stale") % age)) if age is not None else ""
+    title = f"{dim(cyan('┤'))} {bold(T('queue'))}{stale} {dim(cyan('├'))}"
     rows.append(trace(TL + title + H * max(0, inner - vlen(title)) + TR, 3))
 
     def line(c):
@@ -1786,7 +1788,8 @@ def render(nodes, opt=None, **kw):
     got = fetch(jobs, timeout)
     snaps = [got[("node", n)][0] for n in nodes]
     ages = [got[("node", n)][1] for n in nodes]
-    slurm_data = got[("slurm",)][0] or ("", "", "")
+    slurm_data, slurm_age = got[("slurm",)]
+    slurm_data = slurm_data or ("", "", "")
     update_state(nodes, snaps, ages, slurm_data, opt.idle_samples)
     head_snaps = snaps
     me = my_user() if opt.me else None
@@ -1805,7 +1808,8 @@ def render(nodes, opt=None, **kw):
             frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr, ages=ages,
-                              me=me, head_snaps=head_snaps, dense=dense)
+                              me=me, head_snaps=head_snaps, dense=dense,
+                              slurm_age=slurm_age)
             if best is None or len(frame) < len(best[0]):
                 best = (frame, jcols)
             if len(frame) <= lines:
@@ -1817,7 +1821,7 @@ def render(nodes, opt=None, **kw):
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr,
                               scope_h=6 + spare, ages=ages, me=me, head_snaps=head_snaps,
-                              dense=dense)
+                              dense=dense, slurm_age=slurm_age)
         return "\n".join(frame)
 
     # --fit：硬塞進一頁。依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄 -> 裁 job。
@@ -1829,7 +1833,8 @@ def render(nodes, opt=None, **kw):
         frame, hidden = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
                                sp, compact, jcols, slurm_data=slurm_data,
                                want_qr=want_qr and not compact, ages=ages,
-                               me=me, head_snaps=head_snaps, dense=dense)
+                               me=me, head_snaps=head_snaps, dense=dense,
+                              slurm_age=slurm_age)
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
@@ -1938,7 +1943,7 @@ def dense_panel(nodes, snaps, ages, width):
 
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
            job_cols=1, slurm_data=("", ""), want_qr=False, scope_h=6, ages=None,
-           me=None, head_snaps=None, dense=False):
+           me=None, head_snaps=None, dense=False, slurm_age=None):
     # 版面填滿整個終端機：先決定一排放幾個面板，再把寬度平均分掉，
     # 而不是用固定寬度、右邊留一大塊空白。
     total_w, percol, panel_w = _layout(cols, len(nodes), force_stack or dense)
@@ -1976,17 +1981,20 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
         # QR 區塊固定 20 行高，佇列比它矮的話排多欄一行都省不到，
         # 只會把欄位截斷。這種情況一律用單欄，看得清楚。
         one, hidden_one = slurm_section(total_w - qw, max_rows=max(1, budget),
-                                        job_cols=1, data=slurm_data, user=me)
+                                        job_cols=1, data=slurm_data, user=me,
+                                    age=slurm_age)
         # QR 旁邊剩下的寬度不夠每欄放下完整的窄版 job 列時，也維持單欄
         too_narrow = (total_w - qw - 2) // job_cols < JOB_FIXED_NARROW + 4
         if len(one) <= len(qr_panel(0)) or job_cols == 1 or too_narrow:
             sec, hidden = one, hidden_one
         else:
             sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
-                                        job_cols=job_cols, data=slurm_data, user=me)
+                                        job_cols=job_cols, data=slurm_data, user=me,
+                                    age=slurm_age)
     else:
         sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
-                                    job_cols=job_cols, data=slurm_data, user=me)
+                                    job_cols=job_cols, data=slurm_data, user=me,
+                                    age=slurm_age)
     if show_qr_panel:
         qr = qr_panel(len(sec))
         # QR 比佇列高的話，把佇列的框往下拉齊，不要在左邊留一塊空洞

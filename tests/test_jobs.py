@@ -264,6 +264,7 @@ class ReviewFixes(unittest.TestCase):
         self.assertTrue(m.idle_held("n1", g2))            # 分配紀錄還在，計數沒被清掉
         self.assertIn("train-lm", out)                    # 佇列沿用上一次
         self.assertNotIn("(no jobs)", out)
+        self.assertIn("Slurm queue stale 0s", out)        # 並標明是舊的（假時鐘沒走，所以 0s）
 
     def test_no_slurm_at_all(self):
         m = load()
