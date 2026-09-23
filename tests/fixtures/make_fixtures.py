@@ -14,7 +14,7 @@ import shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 H200_MIB = 143771
-SQUEUE_FMT = "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l|%u|%A"
+SQUEUE_FMT = "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l|%u"      # 同 slurmtop 的 SQUEUE
 
 
 def gpu_line(i, util, mem, temp, power, total=H200_MIB):
@@ -46,7 +46,7 @@ def sinfo(states):
 
 def squeue_line(jid, name, st, used, left, nnodes, cpus, gres, where, limit, user, raw=None):
     return "|".join(map(str, [jid, name, st, used, left, nnodes, cpus, gres, where, limit,
-                              user, raw or jid]))
+                              user]))
 
 
 def write(scn, files):

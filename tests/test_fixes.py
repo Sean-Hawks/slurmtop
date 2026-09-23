@@ -234,5 +234,40 @@ class GresFormats(unittest.TestCase):
         self.assertNotIn("gres", out)
 
 
+def col_of(line, needle):
+    """needle 在這行的顯示欄位（全形字算 2 格）。"""
+    import unicodedata
+    i = line.index(needle)
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in line[:i])
+
+
+class UserColumn(unittest.TestCase):
+    """bug 5：佇列要有 USER 欄（squeue %u）。"""
+
+    def test_squeue_asks_for_user(self):
+        self.assertTrue(load().SQUEUE.split('"')[1].split("|")[10] == "%u")
+
+    def test_user_shown_and_aligned(self):
+        for lang, head in (("en", "USER"), ("zh", "使用者")):
+            with self.subTest(lang):
+                out = run("full2x8", "--no-color", "--lang", lang).stdout.splitlines()
+                header = next(ln for ln in out if head in ln)
+                row871 = next(ln for ln in out if " 871 " in ln)
+                row873 = next(ln for ln in out if " 873 " in ln)
+                self.assertIn("hawks", row871)
+                self.assertIn("lin", row873)
+                self.assertEqual(col_of(header, head), col_of(row871, " hawks ") + 1)
+                # 其他欄位也要對齊（以前中文標題會把後面的欄位推歪）
+                gpu_h = "GPU"
+                self.assertEqual(col_of(header, gpu_h) + len(gpu_h),
+                                 col_of(row871, " 8 ") + 2)
+
+    def test_multi_column_keeps_user(self):
+        out = run("longq", "--no-color", "--no-qr", cols=150, lines=30).stdout
+        header = next(ln for ln in out.splitlines() if "USER" in ln)
+        self.assertGreaterEqual(header.count("USER"), 2)     # 多欄時每欄都有
+        self.assertIn("chen", out)
+
+
 if __name__ == "__main__":
     unittest.main()

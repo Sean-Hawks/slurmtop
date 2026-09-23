@@ -47,11 +47,11 @@
 │ G7 ▕████████████▏ 100%≋ 119.8G 59°  676W                                              │
 ╰───────────────────────────────────────────────────────────────────────────────────────╯
 ╭┤ Slurm queue ├────────────────────────────────────────────────────────────────────────╮
-│      JOB  NAME        STATE   ELAPSED   PROG     LEFT       N  CPU  GPU  WHERE        │
-│      871  hawks-mxp16 ◓ run   12m32s    ██░░░░░░ 47m28s     2  448    8  n[1-2]       │
-│      872  hawks-qe-pw ◓ run   9m24s     ███░░░░░ 20m36s     1  224    8  n2           │
-│      873  hawks-eagle ◌ pend  0s        ░░░░░░░░ 2h00m      1   32    4  (Resources)  │
-│      874  hawks-cfd   ◌ pend  0s        ░░░░░░░░ 3h00m      1   14    -  (Dependency) │
+│      JOB  NAME        USER     STATE   ELAPSED   PROG     LEFT       N  CPU  GPU  WHE │
+│      871  hawks-mxp16 hawks    ◓ run   12m32s    ██░░░░░░ 47m28s     2  448    8  n[1 │
+│      872  hawks-qe-pw hawks    ◓ run   9m24s     ███░░░░░ 20m36s     1  224    8  n2  │
+│      873  hawks-eagle lin      ◌ pend  0s        ░░░░░░░░ 2h00m      1   32    4  (Re │
+│      874  hawks-cfd   chen     ◌ pend  0s        ░░░░░░░░ 3h00m      1   14    -  (De │
 │ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │
 │  n1         allocated CPU ▕██████████▏ 224/224 idle 0   RAM free 725 GiB              │
 │  n2         allocated CPU ▕██████████▏ 224/224 idle 0   RAM free 725 GiB              │

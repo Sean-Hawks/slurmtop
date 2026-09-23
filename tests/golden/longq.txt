@@ -23,28 +23,68 @@
 │ G7 ▕░░░░░░░░░░░░▏   0%  ▁▁▁▁▁▁▁▁   0.0G 31°   82W                      ││ G7 ▕░░░░░░░░░░░░▏   0%  ▁▁▁▁▁▁▁▁   0.0G 31°   82W                      │
 ╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────────╯
 ╭┤ Slurm queue ├──────────────────────────────────────────────────────────────────────────────────────────╮  ┤ SCAN ├───────────────────────────────
-│     JOB NAME      STATE  ELAPSED       JOB NAME      STATE  ELAPSED       JOB NAME      STATE  ELAPSED  │  ⌜─────────────────────────────────────⌝
-│    2000 sweep-00  ◓ run  1h00m        2001 sweep-01  ◓ run  1h01m        2002 sweep-02  ◓ run  1h02m    │  │█████████████████████████████████████│
-│    2003 sweep-03  ◓ run  1h03m        2004 sweep-04  ◓ run  1h04m        2005 sweep-05  ◓ run  1h05m    │  │█████████████████████████████████████│
-│    2006 sweep-06  ◌ pend 0s           2007 sweep-07  ◌ pend 0s           2008 sweep-08  ◌ pend 0s       │  │████ ▄▄▄▄▄ █▄█  █▀ ██▀ █▀█ ▄▄▄▄▄ ████│
-│    2009 sweep-09  ◌ pend 0s           2010 sweep-10  ◌ pend 0s           2011 sweep-11  ◌ pend 0s       │  │████ █   █ █▄ ▄▀▀ ▀▄▀ ▄▄▄█ █   █ ████│
-│    2012 sweep-12  ◌ pend 0s           2013 sweep-13  ◌ pend 0s           2014 sweep-14  ◌ pend 0s       │  │████ █▄▄▄█ █▀▀█ █▄██▀█ █▀█ █▄▄▄█ ████│
-│    2015 sweep-15  ◌ pend 0s           2016 sweep-16  ◌ pend 0s           2017 sweep-17  ◌ pend 0s       │  │████▄▄▄▄▄▄▄█▄▀▄█▄█▄█ █ █ █▄▄▄▄▄▄▄████│
-│    2018 sweep-18  ◌ pend 0s           2019 sweep-19  ◌ pend 0s           2020 sweep-20  ◌ pend 0s       │  │████ ▀ ▀█▀▄ █▄▀▄▀▄▄▀  █  ▀▀ ██▄▀ ████│
-│    2021 sweep-21  ◌ pend 0s           2022 sweep-22  ◌ pend 0s           2023 sweep-23  ◌ pend 0s       │  │████▄▄▄█▀▄▄▄ █▄█ ▄▄ ▄▄▄ █▀▄▄  ▄█▄████│
-│    2024 sweep-24  ◌ pend 0s           2025 sweep-25  ◌ pend 0s           2026 sweep-26  ◌ pend 0s       │  │████▄▄█▀▄ ▄ ▄▀ ██ ▄ ▀██▄▀█  ███▀ ████│
-│    2027 sweep-27  ◌ pend 0s           2028 sweep-28  ◌ pend 0s           2029 sweep-29  ◌ pend 0s       │  │████▄ ▀▄  ▄▄█▀  ▄▀█▄▀▄  ▀▄  ▄███▄████│
-│    2030 sweep-30  ◌ pend 0s           2031 sweep-31  ◌ pend 0s           2032 sweep-32  ◌ pend 0s       │  │████▄▄█▀▀▀▄▀█ ▀▄ ▄█ ▀█▀▀▄▄ ▀██▀▀ ████│
-│    2033 sweep-33  ◌ pend 0s           2034 sweep-34  ◌ pend 0s           2035 sweep-35  ◌ pend 0s       │  │████▄▄▄▄▀▄▄▀█▀▀█ ▄ ▄ █▀▄▀█▀█ ▄██▄████│
-│    2036 sweep-36  ◌ pend 0s           2037 sweep-37  ◌ pend 0s           2038 sweep-38  ◌ pend 0s       │  │████▄▄█▄▄▄▄█ ▄▀▀█  ▀ ▀██ ▄▄▄  ▀▄▀████│
-│    2039 sweep-39  ◌ pend 0s           2040 sweep-40  ◌ pend 0s           2041 sweep-41  ◌ pend 0s       │  │████ ▄▄▄▄▄ █▄█▀▄▀▀█ ██ ▀ █▄█ ███ ████│
-│    2042 sweep-42  ◌ pend 0s           2043 sweep-43  ◌ pend 0s           2044 sweep-44  ◌ pend 0s       │  │████ █   █ ██ ▀ █▄█ ▀█▀   ▄▄  ▀█ ████│
-│    2045 sweep-45  ◌ pend 0s           2046 sweep-46  ◌ pend 0s           2047 sweep-47  ◌ pend 0s       │  │████ █▄▄▄█ █▄█▄▄▄▄▀ ▀█ █▀▄█▀ ▀█▄▄████│
-│    2048 sweep-48  ◌ pend 0s           2049 sweep-49  ◌ pend 0s           2050 sweep-50  ◌ pend 0s       │  │████▄▄▄▄▄▄▄█▄▄▄█▄▄██▄█▄█▄███▄▄██▄████│
-│    2051 sweep-51  ◌ pend 0s           2052 sweep-52  ◌ pend 0s           2053 sweep-53  ◌ pend 0s       │  │█████████████████████████████████████│
-│    2054 sweep-54  ◌ pend 0s           2055 sweep-55  ◌ pend 0s           2056 sweep-56  ◌ pend 0s       │  │█████████████████████████████████████│
-│    2057 sweep-57  ◌ pend 0s           2058 sweep-58  ◌ pend 0s           2059 sweep-59  ◌ pend 0s       │  ⌞─────────────────────────────────────⌟
-│ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │      github.com/Sean-Hawks/slurmtop
+│      JOB  NAME        USER     STATE   ELAPSED   PROG     LEFT       N  CPU  GPU  WHERE                 │  ⌜─────────────────────────────────────⌝
+│     2000  sweep-00    hawks    ◓ run   1h00m     ░░░░░░░░ 22h00m     1   16    1  n1                    │  │█████████████████████████████████████│
+│     2001  sweep-01    lin      ◓ run   1h01m     ░░░░░░░░ 22h00m     1   16    1  n2                    │  │█████████████████████████████████████│
+│     2002  sweep-02    chen     ◓ run   1h02m     ░░░░░░░░ 22h00m     1   16    1  n1                    │  │████ ▄▄▄▄▄ █▄█  █▀ ██▀ █▀█ ▄▄▄▄▄ ████│
+│     2003  sweep-03    wu       ◓ run   1h03m     ░░░░░░░░ 22h00m     1   16    1  n2                    │  │████ █   █ █▄ ▄▀▀ ▀▄▀ ▄▄▄█ █   █ ████│
+│     2004  sweep-04    hawks    ◓ run   1h04m     ░░░░░░░░ 22h00m     1   16    1  n1                    │  │████ █▄▄▄█ █▀▀█ █▄██▀█ █▀█ █▄▄▄█ ████│
+│     2005  sweep-05    lin      ◓ run   1h05m     ░░░░░░░░ 22h00m     1   16    1  n2                    │  │████▄▄▄▄▄▄▄█▄▀▄█▄█▄█ █ █ █▄▄▄▄▄▄▄████│
+│     2006  sweep-06    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████ ▀ ▀█▀▄ █▄▀▄▀▄▄▀  █  ▀▀ ██▄▀ ████│
+│     2007  sweep-07    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████▄▄▄█▀▄▄▄ █▄█ ▄▄ ▄▄▄ █▀▄▄  ▄█▄████│
+│     2008  sweep-08    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████▄▄█▀▄ ▄ ▄▀ ██ ▄ ▀██▄▀█  ███▀ ████│
+│     2009  sweep-09    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████▄ ▀▄  ▄▄█▀  ▄▀█▄▀▄  ▀▄  ▄███▄████│
+│     2010  sweep-10    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████▄▄█▀▀▀▄▀█ ▀▄ ▄█ ▀█▀▀▄▄ ▀██▀▀ ████│
+│     2011  sweep-11    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████▄▄▄▄▀▄▄▀█▀▀█ ▄ ▄ █▀▄▀█▀█ ▄██▄████│
+│     2012  sweep-12    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████▄▄█▄▄▄▄█ ▄▀▀█  ▀ ▀██ ▄▄▄  ▀▄▀████│
+│     2013  sweep-13    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████ ▄▄▄▄▄ █▄█▀▄▀▀█ ██ ▀ █▄█ ███ ████│
+│     2014  sweep-14    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████ █   █ ██ ▀ █▄█ ▀█▀   ▄▄  ▀█ ████│
+│     2015  sweep-15    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████ █▄▄▄█ █▄█▄▄▄▄▀ ▀█ █▀▄█▀ ▀█▄▄████│
+│     2016  sweep-16    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │████▄▄▄▄▄▄▄█▄▄▄█▄▄██▄█▄█▄███▄▄██▄████│
+│     2017  sweep-17    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │█████████████████████████████████████│
+│     2018  sweep-18    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  │█████████████████████████████████████│
+│     2019  sweep-19    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  ⌞─────────────────────────────────────⌟
+│     2020  sweep-20    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │      github.com/Sean-Hawks/slurmtop
+│     2021  sweep-21    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2022  sweep-22    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2023  sweep-23    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2024  sweep-24    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2025  sweep-25    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2026  sweep-26    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2027  sweep-27    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2028  sweep-28    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2029  sweep-29    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2030  sweep-30    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2031  sweep-31    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2032  sweep-32    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2033  sweep-33    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2034  sweep-34    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2035  sweep-35    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2036  sweep-36    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2037  sweep-37    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2038  sweep-38    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2039  sweep-39    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2040  sweep-40    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2041  sweep-41    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2042  sweep-42    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2043  sweep-43    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2044  sweep-44    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2045  sweep-45    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2046  sweep-46    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2047  sweep-47    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2048  sweep-48    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2049  sweep-49    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2050  sweep-50    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2051  sweep-51    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2052  sweep-52    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2053  sweep-53    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2054  sweep-54    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2055  sweep-55    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2056  sweep-56    hawks    ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2057  sweep-57    lin      ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2058  sweep-58    chen     ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│     2059  sweep-59    wu       ◌ pend  0s        ░░░░░░░░ 1d00h      1   16    1  (Priority)            │  
+│ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈ │  
 │  n1         mixed    CPU ▕██░░░░░░░░▏ 48/224 idle 176   RAM free 725 GiB                                │  
 │  n2         mixed    CPU ▕██░░░░░░░░▏ 48/224 idle 176   RAM free 725 GiB                                │  
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────╯  

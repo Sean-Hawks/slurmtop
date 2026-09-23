@@ -69,7 +69,7 @@ STRINGS = {
         "hidden": "%d more job(s) hidden - run squeue for the full list",
         "footer": "Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval",
         "gpus": "GPUs", "local": "local", "remote": "ssh", "prog": "PROG", "threads": "threads", "no_gpu": "no GPU",
-        "stale": "stale %ds",
+        "stale": "stale %ds", "user": "USER",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -80,7 +80,7 @@ STRINGS = {
         "hidden": "…還有 %d 個 job 未顯示（用 squeue 看完整清單）",
         "footer": "Ctrl-C 離開  ·  --proc 看行程  ·  --stack 上下排列  ·  -n <秒> 改間隔",
         "gpus": "張", "local": "本機", "remote": "ssh", "prog": "進度", "threads": "執行緒", "no_gpu": "無 GPU",
-        "stale": "%d 秒前的資料",
+        "stale": "%d 秒前的資料", "user": "使用者",
     },
 }
 
@@ -132,6 +132,16 @@ def unicodedata_wide(ch):
 
 def pad(s, width):
     return s + " " * max(0, width - vlen(s))
+
+
+def rpad(s, width):
+    """靠右對齊版的 pad()。f"{s:>n}" 只數字元數，碰到中文或色碼會歪。"""
+    return " " * max(0, width - vlen(s)) + s
+
+
+def cell(s, width):
+    """固定寬度的欄位：太長裁掉、太短補空白，全形字也對得齊。"""
+    return pad(clip(s, width), width)
 
 
 def clip(s, width):
@@ -657,7 +667,7 @@ def fetch(jobs, timeout):
     return out
 
 
-SQUEUE = 'squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l"'
+SQUEUE = 'squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l|%u"'
 SINFO = 'sinfo -h -N -o "%N|%T|%C|%e/%m"'
 
 
@@ -1156,6 +1166,7 @@ def job_cell(f, narrow, where_w=20):
     """一個 job 的一列字串。narrow 用在多欄排版。"""
     jid, name, st, elapsed, left, nodes, cpus, gres, where = f[:9]
     limit = f[9] if len(f) > 9 else ""
+    user = f[10] if len(f) > 10 else ""
     if st == "R":
         badge = rgb(46, 204, 113, spinner() + " " + T("run"))
     elif st == "PD":
@@ -1165,23 +1176,33 @@ def job_cell(f, narrow, where_w=20):
     n = gpu_count(gres)
     gpu = "-" if n is None else str(n)
     if narrow:
-        return (f" {bold('%7s' % jid[:7])} {name[:9]:<9} {pad(badge, 6)} "
+        return (f" {bold('%7s' % jid[:7])} {cell(name, 9)} {cell(dim(user), 6)} "
+                f"{pad(badge, 6)} "
                 f"{pad(fmt_dur(elapsed), 7)} {progress(elapsed, limit, 5)} "
                 f"{pad(fmt_dur(left), 7)}{gpu:>2} {cyan(where[:where_w])}")
-    return (f"  {bold('%7s' % jid[:7])}  {name[:11]:<11} {pad(badge, 7)} "
+    return (f"  {bold('%7s' % jid[:7])}  {cell(name, 11)} {cell(dim(user), 8)} "
+            f"{pad(badge, 7)} "
             f"{pad(fmt_dur(elapsed), 9)} {progress(elapsed, limit)} "
             f"{pad(fmt_dur(left), 9)} "
             f"{nodes:>2} {cpus:>4} {gpu:>4}  {cyan(where[:where_w])}")
 
 
+# WHERE 之前所有欄位的固定寬度（多欄時的窄版 / 單欄的寬版）
+JOB_FIXED_NARROW = 53
+JOB_FIXED_WIDE = 84
+
+
 def job_header(narrow):
+    # 標題可能是中文，一律用 pad/rpad/cell 依顯示寬度對齊
     if narrow:
-        return (f" {T('job'):>7} {T('name'):<9} {pad(T('state'), 6)} "
+        return (f" {rpad(T('job'), 7)} {cell(T('name'), 9)} {cell(T('user'), 6)} "
+                f"{pad(T('state'), 6)} "
                 f"{pad(T('used'), 7)} {pad(T('prog'), 5)} "
-                f"{pad(T('left'), 7)}{T('gpu'):>2} {T('where')}")
-    return (f"  {T('job'):>7}  {T('name'):<11} {pad(T('state'), 7)} "
+                f"{pad(T('left'), 7)}{rpad(T('gpu'), 2)} {T('where')}")
+    return (f"  {rpad(T('job'), 7)}  {cell(T('name'), 11)} {cell(T('user'), 8)} "
+            f"{pad(T('state'), 7)} "
             f"{pad(T('used'), 9)} {pad(T('prog'), 8)} {pad(T('left'), 9)} "
-            f"{T('nd'):>2} {T('cpu'):>4} {T('gpu'):>4}  {T('where')}")
+            f"{rpad(T('nd'), 2)} {rpad(T('cpu'), 4)} {rpad(T('gpu'), 4)}  {T('where')}")
 
 
 def slurm_section(width, max_rows=99, job_cols=1, data=None):
@@ -1204,7 +1225,7 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None):
         narrow = job_cols > 1
         colw = inner // job_cols
 
-        fixed = 46 if narrow else 75          # WHERE 之前所有欄位的固定寬度
+        fixed = JOB_FIXED_NARROW if narrow else JOB_FIXED_WIDE
         where_w = max(4, colw - fixed)
         line(dim("".join(pad(clip(job_header(narrow), colw - 1), colw)
                              for _ in range(job_cols))))
@@ -1287,7 +1308,7 @@ def render(nodes, opt=None, **kw):
         # 預設：每張卡的明細與整個佇列都完整顯示，畫面長一點沒關係。
         # 佇列先用單欄；若這樣塞不進視窗，改多欄試著擠進去，但絕不收合或裁切。
         for jcols in (1, 2, 3):
-            if jcols > 1 and cols < 46 * jcols:
+            if jcols > 1 and cols < JOB_FIXED_NARROW * jcols:
                 break
             frame, _ = _frame(nodes, snaps, cols, 10 ** 6, show_proc, force_stack,
                               sparks, compact=False, job_cols=jcols,
@@ -1306,7 +1327,7 @@ def render(nodes, opt=None, **kw):
     plans = [(sparks, False, 1), (False, False, 1), (False, True, 1),
              (False, True, 2), (False, True, 3)]
     for sp, compact, jcols in plans:
-        if jcols > 1 and cols < 46 * jcols:
+        if jcols > 1 and cols < JOB_FIXED_NARROW * jcols:
             continue
         frame, hidden = _frame(nodes, snaps, cols, lines, show_proc, force_stack,
                                sp, compact, jcols, slurm_data=slurm_data,
@@ -1364,7 +1385,9 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
         # 只會把欄位截斷。這種情況一律用單欄，看得清楚。
         one, hidden_one = slurm_section(total_w - qw, max_rows=max(1, budget),
                                         job_cols=1, data=slurm_data)
-        if len(one) <= len(qr_panel(0)) or job_cols == 1:
+        # QR 旁邊剩下的寬度不夠每欄放下完整的窄版 job 列時，也維持單欄
+        too_narrow = (total_w - qw - 2) // job_cols < JOB_FIXED_NARROW + 4
+        if len(one) <= len(qr_panel(0)) or job_cols == 1 or too_narrow:
             sec, hidden = one, hidden_one
         else:
             sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
