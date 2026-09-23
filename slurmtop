@@ -75,6 +75,8 @@ STRINGS = {
         "gpus": "GPUs", "local": "local", "remote": "ssh", "prog": "PROG", "threads": "threads", "no_gpu": "no GPU",
         "stale": "stale %ds", "user": "USER", "more_procs": "… %d more",
         "idle_tag": "IDLE", "idle_alert": "held but idle", "none_mine": "no GPUs in use by %s",
+        "alert_down": "unreachable", "alert_hot": "hot %.0f°C", "alert_disk": "disk %.0f%%",
+        "alert_more": "+%d more",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -87,6 +89,8 @@ STRINGS = {
         "gpus": "張", "local": "本機", "remote": "ssh", "prog": "進度", "threads": "執行緒", "no_gpu": "無 GPU",
         "stale": "%d 秒前的資料", "user": "使用者", "more_procs": "…還有 %d 個",
         "idle_tag": "閒置", "idle_alert": "佔著卻閒置", "none_mine": "%s 目前沒有佔用任何 GPU",
+        "alert_down": "斷線", "alert_hot": "過熱 %.0f°C", "alert_disk": "磁碟 %.0f%%",
+        "alert_more": "還有 %d 項",
     },
 }
 
@@ -1164,17 +1168,56 @@ def owner_tag(node, g):
     return out
 
 
-def alert_line(nodes, snaps, width):
-    """頂端警示列：列出有問題的機器；沒有問題就不佔任何一行。"""
-    items = []
+RED, YELLOW = (231, 76, 60), (241, 196, 15)
+
+
+def alerts(nodes, snaps, ages=None):
+    """有問題的機器，依嚴重程度排好：[(顏色, 文字)]。
+
+    斷線 > GPU 過熱 > 磁碟快滿 > 資料過時 > 佔著卻閒置。
+    """
+    ages = ages or [None] * len(nodes)
+    down, hot, disk, stale = [], [], [], []
+    for node, d, age in zip(nodes, snaps, ages):
+        if not d:
+            down.append((RED, f"{node} {T('alert_down')}"))
+            continue
+        if age is not None:
+            stale.append((YELLOW, f"{node} " + T("stale") % age))
+        hg = [g for g in d["gpus"] if g["temp"] is not None and g["temp"] >= ALERT_TEMP]
+        if hg:
+            gs = ",".join("G" + g["idx"] for g in hg)
+            hot.append((RED, f"{node} {gs} " + T("alert_hot") % max(g["temp"] for g in hg)))
+        dk = d.get("disk")
+        if dk and dk["pct"] >= DISK_ALERT:
+            disk.append((RED, f"{node} " + T("alert_disk") % dk["pct"]))
+    idle = []
     for node, idx, jid, user in idle_alerts(nodes, snaps):
-        gs = ",".join("G" + i for i in idx)
         who = " ".join(x for x in (jid, user) if x)
-        items.append(rgb(241, 196, 15, f"{node} {gs} {T('idle_alert')}") + dim(f" ({who})"))
+        gs = ",".join("G" + i for i in idx)
+        idle.append((YELLOW, f"{node} {gs} {T('idle_alert')}" + (f" ({who})" if who else "")))
+    return down + hot + disk + stale + idle
+
+
+def alert_line(nodes, snaps, width, ages=None):
+    """頂端警示列：一行列出有問題的機器，放不下的收成「+N」；沒有問題就不佔任何一行。"""
+    items = alerts(nodes, snaps, ages)
     if not items:
         return []
-    mark = "!" if _ascii else "⚠"
-    return [clip("  " + rgb(241, 196, 15, bold(mark)) + " " + dim(" · ").join(items), width)]
+    worst = RED if any(c == RED for c, _ in items) else YELLOW
+    head = "  " + rgb(*worst, bold("!" if _ascii else "⚠")) + " "
+    sep = dim(" · ")
+    shown = []
+    for i, (col, txt) in enumerate(items):
+        rest = len(items) - i - 1
+        more = (sep + dim(T("alert_more") % rest)) if rest else ""
+        cand = head + sep.join(shown + [rgb(*col, txt)]) + more
+        if vlen(cand) > width and shown:
+            break
+        shown.append(rgb(*col, txt))
+    rest = len(items) - len(shown)
+    line = head + sep.join(shown) + ((sep + dim(T("alert_more") % rest)) if rest else "")
+    return [clip(line, width)]
 
 
 def scope(vals, width, height=6):
@@ -1784,7 +1827,7 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
 
     # 頂端的總覽永遠看整個叢集（--me 也一樣），下面的面板才是篩過的
     out = cluster_header(head_snaps if head_snaps is not None else snaps, total_w)
-    out += alert_line(nodes, snaps, total_w)
+    out += alert_line(nodes, snaps, total_w, ages)
     if not compact:
         out += scope_section(total_w, scope_h)
     if me and not nodes:

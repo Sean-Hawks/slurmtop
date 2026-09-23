@@ -142,7 +142,8 @@ class HungNodeDoesNotFreeze(unittest.TestCase):
             out = m.render(["n1", "n2"], node_timeout=0.3)
             self.assertLess(time.monotonic() - t, 2)
         self.assertIn("stale 12s", out)
-        self.assertEqual(out.count("stale"), 1)           # 只有 n2
+        titles = [ln for ln in out.splitlines() if "NODE" in ln]
+        self.assertEqual(sum(t.count("stale") for t in titles), 1)   # 只有 n2 的標題
         self.assertNotIn("unreachable", out)
         # 舊資料不寫進 n2 自己的歷史，n1 照寫
         self.assertEqual(len(m._hist[("n2", "gpu")]), 0)

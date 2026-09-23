@@ -238,6 +238,22 @@ def main():
                        "node/n1.txt": remote(n1, n1p, n1j),
                        "node/n2.txt": remote(n2, n2p, n2j)})
 
+    # 11. 警示列：n1 磁碟 95%、G3/G5 過熱；n2 的 G6 被 886 佔著沒用；n3 連不上；n4 一切正常
+    hot = [gpu_line(i, 99, 120000, 70, "690.00") for i in range(8)]
+    hot[3] = gpu_line(3, 99, 120000, 84, "700.00")
+    hot[5] = gpu_line(5, 99, 120000, 80, "700.00")
+    n2a = [gpu_line(i, 0, 1, 30, "75.00", node="n2") for i in range(8)]
+    write("alerts", {**slurm_common(("n1", "n2", "n3", "n4")),
+                     "sinfo.txt": sinfo([("n1", "mixed", "32/192/0/224"), ("n2", "mixed", "8/216/0/224"),
+                                         ("n3", "down*", "0/0/224/224"), ("n4", "idle", "0/224/0/224")]),
+                     "squeue.txt": squeue_line(886, "notebook", "R", "2:00:00", "6:00:00", 1, 8,
+                                               "gres/gpu:1", "n2", "8:00:00", "wu") + "\n",
+                     "scontrol_jobs.txt": scontrol_job(886, "wu", "RUNNING",
+                                                       [("n2", "gpu:h200:1(IDX:6)")]) + "\n",
+                     "node/n1.txt": remote(hot, disk="1843200000 1733000000 91000000"),
+                     "node/n2.txt": remote(n2a),
+                     "node/n4.txt": remote(idle_gpus(node="n4"))})
+
     # 9. 連續兩次取樣（CPU% 要兩筆 /proc/stat 才算得出來）
     write("seq", {"hostname.txt": "n1\n",
                   "node/n1.1.txt": remote(cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",

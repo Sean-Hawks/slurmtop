@@ -183,7 +183,7 @@ rest are read over SSH, one round trip each per refresh.
 | `871 hawks` at the end of a GPU row | the Slurm job holding that GPU and who submitted it; `871+1` means two jobs share it |
 | `(root)` at the end of a GPU row | a process that is not part of any Slurm job, and its owner |
 | `IDLE` in a GPU row | held by a job but below 5 % utilisation for the last `--idle-samples` refreshes |
-| `⚠ n1 G2,G3 held but idle (881 lin)` | the same, collected in one line under the header; the line is absent when there is nothing to report |
+| `⚠ n3 unreachable · n1 G3 hot 84°C · n1 disk 95% · n2 stale 12s · n1 G2,G3 held but idle (881 lin)` | alert line under the header, worst first: unreachable nodes, GPUs at ≥78 °C, root disks at ≥90 %, stale nodes, held-but-idle GPUs. What does not fit collapses into `+N more`; the line is absent when there is nothing to report |
 | `● run` / `◌ pend` | Slurm job state |
 | `USER` | who submitted the job |
 | `PROG ███░░░░░` | how much of the job's time limit is used up — turns red as it approaches the wall |

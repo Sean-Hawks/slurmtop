@@ -1,0 +1,4 @@
+NodeName=n1 Arch=x86_64 NodeHostName=n1 State=IDLE
+NodeName=n2 Arch=x86_64 NodeHostName=n2 State=IDLE
+NodeName=n3 Arch=x86_64 NodeHostName=n3 State=IDLE
+NodeName=n4 Arch=x86_64 NodeHostName=n4 State=IDLE

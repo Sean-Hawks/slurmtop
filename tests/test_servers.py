@@ -178,5 +178,55 @@ class DiskAndNet(unittest.TestCase):
         self.assertIn("52.1%", out)
 
 
+class AlertLine(unittest.TestCase):
+    """第 3 步第 3 項：頂端警示列（斷線、磁碟 ≥90%、GPU 過熱、佔著卻閒置），沒問題就不顯示。"""
+
+    def test_everything_listed_in_order(self):
+        out = run("alerts", "--no-color", "--idle-samples", "1").stdout.splitlines()
+        self.assertEqual(out[4].strip(),
+                         "⚠ n3 unreachable · n1 G3,G5 hot 84°C · n1 disk 95% · "
+                         "n2 G6 held but idle (886 wu)")
+
+    def test_zh(self):
+        out = run("alerts", "--no-color", "--idle-samples", "1", "--lang", "zh").stdout
+        self.assertIn("n3 斷線 · n1 G3,G5 過熱 84°C · n1 磁碟 95%", out)
+
+    def test_overflow_collapses(self):
+        out = run("alerts", "--no-color", "--idle-samples", "1", cols=80).stdout.splitlines()
+        self.assertTrue(out[4].rstrip().endswith("+1 more"), out[4])
+        self.assertLessEqual(len(out[4]), 80)
+
+    def test_hidden_when_fine(self):
+        for scn in ("full2x8", "idle2x8", "nogpu"):
+            out = run(scn, "--no-color", "--idle-samples", "1", "--nodes",
+                      "mac,cpu1" if scn == "nogpu" else "n1,n2").stdout
+            self.assertNotIn("⚠", out, scn)
+
+    def test_thresholds(self):
+        m = load()
+        m._color = False
+        g = lambda t: m.parse_gpu("0, GPU-a, 50, 1, 2, %s, 100" % t)
+        base = {"cpu_pct": 0.0, "load": [0, 0, 0], "ncpu": 1, "mem_total": 1, "mem_used": 0,
+                "procs": []}
+        cool = dict(base, gpus=[g(77)], disk={"pct": 89.9, "total": 1, "used": 1})
+        warm = dict(base, gpus=[g(78)], disk={"pct": 90.0, "total": 1, "used": 1})
+        na = dict(base, gpus=[g("[N/A]")], disk=None)
+        self.assertEqual(m.alerts(["a", "b"], [cool, na]), [])
+        texts = [t for _, t in m.alerts(["a"], [warm])]
+        self.assertEqual(texts, ["a G0 hot 78°C", "a disk 90%"])
+
+    def test_stale_listed(self):
+        m = load()
+        with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": fixture("hang"),
+                                          "SLURMTOP_FAKE_NOW": "1000",
+                                          "COLUMNS": "150", "LINES": "40"}):
+            with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": fixture("idle2x8")}):
+                snap = m.snapshot("n2")
+            m._last[("node", "n2")] = (snap, 1000 - 12)
+            m._color = False
+            out = m.render(["n1", "n2"], node_timeout=0.2).splitlines()
+        self.assertEqual(out[4].strip(), "⚠ n2 stale 12s")
+
+
 if __name__ == "__main__":
     unittest.main()
