@@ -32,7 +32,8 @@ class Compat(unittest.TestCase):
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Attribute):
                 self.assertNotIn(node.attr, NEW_ATTRS, f"line {node.lineno}: .{node.attr} is 3.9+")
-            if isinstance(node, ast.keyword) and node.arg == "strict":
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                    and node.func.id == "zip" and any(k.arg == "strict" for k in node.keywords):
                 self.fail(f"line {node.lineno}: zip(strict=) is 3.10+")
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 names = [a.name for a in node.names] if isinstance(node, ast.Import) \

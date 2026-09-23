@@ -6,8 +6,9 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
-from tests.helpers import load, run
+from tests.helpers import FIXTURES, load, run
 
 
 class RemoteJobsSegment(unittest.TestCase):
@@ -218,6 +219,58 @@ class Frames(unittest.TestCase):
         out = run("idleheld", "--no-color", "--me", USER="nobody", LOGNAME="nobody").stdout
         self.assertIn("no GPUs in use by nobody", out)
         self.assertNotIn("NODE", out)
+
+
+class ReviewFixes(unittest.TestCase):
+    """夜間自我審查找到的問題。"""
+
+    def test_nvidia_smi_messages_are_not_gpus(self):
+        m = load()
+        for msg in ("No devices were found",
+                    "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA "
+                    "driver. Make sure that the latest NVIDIA driver is installed and running.",
+                    "Failed to initialize NVML: Driver/library version mismatch"):
+            self.assertIsNone(m.parse_gpu(msg), msg)
+        out = "@@cpu\nPCT 5\n@@load\n1 1 1\n8\n@@mem\n100 50\n@@gpu\nNo devices were found\n@@proc\n"
+        with mock.patch.object(m, "run_script", return_value=out):
+            d = m.snapshot("x")
+        self.assertEqual(d["gpus"], [])                  # 照 CPU-only 機器顯示
+
+    def test_strict_run(self):
+        m = load()
+        self.assertIsNone(m._run(["false"], strict=True))
+        self.assertEqual(m._run(["false"]), "")
+        self.assertIsNone(m._run(["sleep", "5"], timeout=0.2, strict=True))
+        self.assertEqual(m._run(["echo", "hi"], strict=True), "hi\n")
+        self.assertIsNone(m.sh("exit 3", strict=True))
+        self.assertIsNone(m.sh("definitely-not-a-command-xyz", strict=True))
+
+    def test_failed_squeue_keeps_last_queue_and_idle_state(self):
+        m = load()
+        m._color = False
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        shutil.copytree(os.path.join(FIXTURES, "idleheld"), os.path.join(tmp, "f"))
+        fx = os.path.join(tmp, "f")
+        with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": fx, "SLURMTOP_FAKE_NOW": "1000",
+                                          "COLUMNS": "150", "LINES": "45"}):
+            for _ in range(2):
+                m.render(["n1", "n2"], idle_samples=2, node_timeout=2)
+            g2 = next(g for g in m._last[("node", "n1")][0]["gpus"] if g["idx"] == "2")
+            self.assertTrue(m.idle_held("n1", g2))
+            open(os.path.join(fx, "squeue.fail"), "w").close()     # 控制器沒回應
+            self.assertIsNone(m.slurm_query())
+            out = m.render(["n1", "n2"], idle_samples=2, node_timeout=2)
+        self.assertTrue(m.idle_held("n1", g2))            # 分配紀錄還在，計數沒被清掉
+        self.assertIn("train-lm", out)                    # 佇列沿用上一次
+        self.assertNotIn("(no jobs)", out)
+
+    def test_no_slurm_at_all(self):
+        m = load()
+        with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": os.path.join(FIXTURES, "nogpu")}):
+            open_fail = os.path.join(FIXTURES, "nogpu", "squeue.fail")
+            self.assertFalse(os.path.exists(open_fail))
+            self.assertEqual(m.slurm_query(), ("", "", ""))
 
 
 if __name__ == "__main__":

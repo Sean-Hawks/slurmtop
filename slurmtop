@@ -467,8 +467,8 @@ _procs = set()                   # 還在跑的子行程，程式結束時一併
 _procs_lock = threading.Lock()
 
 
-def _run(argv, stdin=None, timeout=20, shell=False):
-    """跑子行程回傳 stdout，逾時或失敗回傳空字串。
+def _run(argv, stdin=None, timeout=20, shell=False, strict=False):
+    """跑子行程回傳 stdout，逾時或失敗回傳空字串（strict 時回傳 None，結束碼非 0 也算失敗）。
 
     子行程開在自己的 process group，逾時或程式結束時整組砍掉（bash -s 底下的
     nvidia-smi 也一起），--once 印完畫面就能走，不必等卡住的 ssh。
@@ -477,19 +477,19 @@ def _run(argv, stdin=None, timeout=20, shell=False):
         p = subprocess.Popen(argv, shell=shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, text=True, start_new_session=True)
     except Exception:
-        return ""
+        return None if strict else ""
     with _procs_lock:
         _procs.add(p)
     try:
         out, _ = p.communicate(stdin, timeout=timeout)
-        return out
+        return None if strict and p.returncode != 0 else out
     except Exception:
         _kill(p)
         try:
             p.communicate(timeout=2)           # 收屍、關掉管線
         except Exception:
             pass
-        return ""
+        return None if strict else ""
     finally:
         with _procs_lock:
             _procs.discard(p)
@@ -512,11 +512,18 @@ def _reap():
             _kill(p)
 
 
-def sh(cmd, timeout=12, key=None):
-    # 假資料模式：不執行指令，改讀 <目錄>/<key>.txt（key 預設是指令的第一個字）
+def sh(cmd, timeout=12, key=None, strict=False):
+    """跑一個 shell 指令回傳 stdout。strict 時失敗（逾時、結束碼非 0）回傳 None 而不是空字串。
+
+    假資料模式：不執行指令，改讀 <目錄>/<key>.txt（key 預設是指令的第一個字）；
+    有 <key>.fail 這個檔就當作指令失敗。
+    """
     if _fx():
-        return _fixture((key or cmd.split()[0]) + ".txt")
-    return _run(cmd, timeout=timeout, shell=True)
+        key = key or cmd.split()[0]
+        if strict and os.path.exists(os.path.join(_fx(), key + ".fail")):
+            return None
+        return _fixture(key + ".txt")
+    return _run(cmd, timeout=timeout, shell=True, strict=strict)
 
 
 def discover_nodes():
@@ -749,8 +756,13 @@ SCONTROL_JOBS = "scontrol -d -o show job"
 
 
 def slurm_query(_=None):
-    """佇列、節點資源、GPU 分配。沒有 Slurm 時都是空字串，仍算成功（tuple 本身不是空的）。"""
-    return (sh(SQUEUE, key="squeue").strip(), sh(SINFO, key="sinfo").strip(),
+    """佇列、節點資源、GPU 分配。squeue 失敗（沒裝 Slurm、控制器沒回應、逾時）回傳 None，
+    讓 fetch() 沿用上一次的資料：把失敗當成「沒有 job」會清掉 GPU 的分配紀錄，
+    佔著卻閒置的計數也跟著歸零。另外兩個失敗就當作空的。"""
+    q = sh(SQUEUE, key="squeue", strict=True)
+    if q is None:
+        return None
+    return (q.strip(), sh(SINFO, key="sinfo").strip(),
             sh(SCONTROL_JOBS, key="scontrol_jobs").strip())
 
 
@@ -870,7 +882,8 @@ def fnum(v, fmt):
 def parse_gpu(line):
     """--query-gpu 的一行 -> dict。索引以外的欄位讀不到就是 None。"""
     f = [x.strip() for x in line.split(",")]
-    if not f[0]:
+    # 開頭不是數字的是 nvidia-smi 的訊息（"No devices were found"、驅動連不上……），不是卡
+    if not f[0].isdigit():
         return None
     f += [""] * (len(GPU_FIELDS) - len(f))
     g = {"idx": f[0], "uuid": f[1] if f[1] not in ("", "[N/A]") else None}
