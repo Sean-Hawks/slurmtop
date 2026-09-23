@@ -1,0 +1,2 @@
+ClusterName = hipac-team3
+SlurmctldHost = n1

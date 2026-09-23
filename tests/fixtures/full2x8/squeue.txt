@@ -1,0 +1,4 @@
+871|hawks-mxp16|R|12:32|47:28|2|448|gres/gpu:8|n[1-2]|1:00:00|hawks|871
+872|hawks-qe-pw|R|9:24|20:36|1|224|gres/gpu:8|n2|30:00|hawks|872
+873|hawks-eagle|PD|0:00|2:00:00|1|32|gres/gpu:4|(Resources)|2:00:00|lin|873
+874|hawks-cfd|PD|0:00|3:00:00|1|14|N/A|(Dependency)|3:00:00|chen|874

@@ -237,7 +237,18 @@ def fmt_dur(t):
 
 _hist = defaultdict(lambda: deque(maxlen=HIST))
 _cpu_prev = {}                               # 每台上一次的 /proc/stat，用來算 CPU%
-_tick = 0                                    # 每次重畫 +1，用來跑動畫
+# 每次重畫 +1，用來跑動畫。測試用 SLURMTOP_FAKE_TICK 固定起點，畫面才可重現。
+_tick = int(os.environ.get("SLURMTOP_FAKE_TICK", "0") or 0)
+
+
+def _now():
+    """目前時間（epoch 秒）。測試用 SLURMTOP_FAKE_NOW 固定，時鐘和 stale 秒數才可重現。"""
+    fake = os.environ.get("SLURMTOP_FAKE_NOW")
+    return float(fake) if fake else time.time()
+
+
+def clock():
+    return time.strftime("%H:%M:%S", time.localtime(_now()))
 
 # 七段風格的大字，給 HUD 主讀數用
 SEG = {
@@ -398,7 +409,24 @@ def gpu_strip(gpus, sep=""):
     return sep.join(out)
 
 
-def sh(cmd, timeout=12):
+def _fx():
+    """測試用假資料目錄（SLURMTOP_FIXTURES）。每次呼叫都重讀，測試才能在匯入後再設定。"""
+    return os.environ.get("SLURMTOP_FIXTURES") or None
+
+
+def _fixture(name):
+    """讀假資料目錄裡的檔案；沒有這個檔就當作指令不存在，回傳空字串。"""
+    try:
+        with open(os.path.join(_fx(), name), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def sh(cmd, timeout=12, key=None):
+    # 假資料模式：不執行指令，改讀 <目錄>/<key>.txt（key 預設是指令的第一個字）
+    if _fx():
+        return _fixture((key or cmd.split()[0]) + ".txt")
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return r.stdout
@@ -408,7 +436,7 @@ def sh(cmd, timeout=12):
 
 def discover_nodes():
     """Node list from Slurm; falls back to the local host."""
-    out = sh('sinfo -h -N -o "%N"').split()
+    out = sh('sinfo -h -N -o "%N"', key="sinfo_nodes").split()
     seen, nodes = set(), []
     for n in out:
         if n not in seen:
@@ -420,7 +448,7 @@ def discover_nodes():
 def node_hostnames():
     """Slurm NodeName -> NodeHostName, so we can tell which node is local."""
     m = {}
-    for line in sh('scontrol show node -o').splitlines():
+    for line in sh('scontrol show node -o', key="scontrol_nodes").splitlines():
         name = re.search(r"NodeName=(\S+)", line)
         host = re.search(r"NodeHostName=(\S+)", line)
         if name:
@@ -451,16 +479,18 @@ def is_local(node):
     return node == h or _hostmap.get(node, node) == h
 
 
-# 遠端只跑 POSIX shell 能做的事，並依作業系統分支。輸出格式固定五段，
-# 讓解析端不必知道對方是什麼系統。沒有 GPU 的機器第四、五段就是空的。
+# 遠端只跑 POSIX shell 能做的事，並依作業系統分支。輸出分成幾段，每段以
+# 「@@段名」開頭，讓解析端不必知道對方是什麼系統，之後加段也不會錯位。
+# 沒有 GPU 的機器 gpu、proc 兩段就是空的。
 REMOTE = f"""
+echo '@@cpu'
 if [ -r /proc/stat ]; then
   head -1 /proc/stat
 else
   idle=$(top -l 1 -n 0 2>/dev/null | sed -n 's/^CPU usage:.*, \\([0-9.]*\\)% idle.*/\\1/p')
   echo "PCT $(awk -v i="${{idle:-100}}" 'BEGIN{{printf "%.1f", 100 - i}}')"
 fi
-echo '@@'
+echo '@@load'
 if [ -r /proc/loadavg ]; then
   cut -d' ' -f1-3 /proc/loadavg
   nproc
@@ -468,7 +498,7 @@ else
   sysctl -n vm.loadavg 2>/dev/null | tr -d '{{}}'
   sysctl -n hw.ncpu 2>/dev/null || echo 0
 fi
-echo '@@'
+echo '@@mem'
 if command -v free >/dev/null 2>&1; then
   free -m | awk '/^Mem:/{{print $2, $3}}'
 elif command -v vm_stat >/dev/null 2>&1; then
@@ -480,17 +510,38 @@ elif command -v vm_stat >/dev/null 2>&1; then
 else
   echo "0 0"
 fi
-echo '@@'
+echo '@@gpu'
 command -v nvidia-smi >/dev/null 2>&1 && \
   nvidia-smi --query-gpu={GPU_Q} --format=csv,noheader,nounits 2>/dev/null
-echo '@@'
+echo '@@proc'
 command -v nvidia-smi >/dev/null 2>&1 && \
   nvidia-smi --query-compute-apps={PROC_Q} --format=csv,noheader,nounits 2>/dev/null
 """
 
 
 
+_fx_calls = defaultdict(int)
+
+
+def _fixture_node(node, timeout):
+    """假資料模式下的 run_script。
+
+    node/<名稱>.txt      REMOTE 的輸出
+    node/<名稱>.<k>.txt  第 k 次呼叫的輸出（CPU%、網速這類要兩筆才算得出來的東西）
+    node/<名稱>.hang     內容是秒數，模擬卡住的節點：睡到逾時為止，什麼都不回
+    """
+    _fx_calls[node] += 1
+    base = os.path.join("node", node)
+    hang = _fixture(base + ".hang").strip()
+    if hang:
+        time.sleep(min(float(hang), timeout))
+        return ""
+    return _fixture(f"{base}.{_fx_calls[node]}.txt") or _fixture(base + ".txt")
+
+
 def run_script(node, script, timeout=20):
+    if _fx():
+        return _fixture_node(node, timeout)
     # ControlMaster：第一次連線後重複使用，省掉每次重畫的 SSH 握手
     argv = ["bash", "-s"] if is_local(node) else [
         "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
@@ -505,12 +556,29 @@ def run_script(node, script, timeout=20):
         return ""
 
 
+SECTIONS = ("cpu", "load", "mem", "gpu", "proc")
+
+
+def sections(out):
+    """把 REMOTE 的輸出依「@@段名」切開，回傳 {段名: 內容}。"""
+    secs, cur = {}, None
+    for ln in out.splitlines():
+        m = re.match(r"^@@(\w+)\s*$", ln)
+        if m:
+            cur = m.group(1)
+            secs[cur] = []
+        elif cur:
+            secs[cur].append(ln)
+    return {k: "\n".join(v).strip() for k, v in secs.items()}
+
+
 def snapshot(node):
-    parts = [p.strip() for p in run_script(node, REMOTE).split("@@")]
-    if len(parts) < 4:            # 節點忙碌時 nvidia-smi 偶爾會慢到超時，重試一次
-        parts = [p.strip() for p in run_script(node, REMOTE).split("@@")]
-    if len(parts) < 4:
+    secs = sections(run_script(node, REMOTE))
+    if "gpu" not in secs:         # 節點忙碌時 nvidia-smi 偶爾會慢到超時，重試一次
+        secs = sections(run_script(node, REMOTE))
+    if "gpu" not in secs:
         return None
+    parts = [secs.get(k, "") for k in SECTIONS]
     d = {}
     # CPU% 用跟上一次重畫的累積值差算，不必在遠端 sleep 取樣
     try:
@@ -597,7 +665,8 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
         right = clip(right, max(0, inner - vlen(left)))
     fill = max(0, inner - vlen(left) - vlen(right))
     edge = rgb(*heat(avg_util), H * fill)          # 邊框顏色跟著整台負載走
-    rows.append(trace(TL + left + edge + right + TR, tick_offset=hash(node) % 7))
+    # 不用 hash()：字串雜湊每次執行都不同，畫面會不可重現
+    rows.append(trace(TL + left + edge + right + TR, tick_offset=sum(map(ord, node)) % 7))
 
     sp = (" " + spark(_hist[(node, "cpu")], 8)) if sparks else ""
     ld = d["load"]
@@ -820,9 +889,9 @@ def cpu_header(live, width):
     _hist[("all", "gpu")].append(avg)              # 沿用同一條歷史，示波器照畫
 
     tag = f" {bold(cyan('SLURMTOP'))} {dim('//')} {bold(_title)} "
-    clock = f" {dim(time.strftime('%H:%M:%S'))} "
-    fill = max(0, width - vlen(tag) - vlen(clock) - 2)
-    out = [cyan("◤") + tag + dim("─" * fill) + clock + cyan("◥")]
+    clk = f" {dim(clock())} "
+    fill = max(0, width - vlen(tag) - vlen(clk) - 2)
+    out = [cyan("◤") + tag + dim("─" * fill) + clk + cyan("◥")]
 
     lab = lambda t: dim(cyan(f"{t:<5}"))
     gauge = [
@@ -862,9 +931,9 @@ def cluster_header(snaps, width):
 
     # 頂列：◤ SLURMTOP ── cluster ─────────── 時間 ◥
     tag = f" {bold(cyan('SLURMTOP'))} {dim('//')} {bold(_title)} "
-    clock = f" {dim(time.strftime('%H:%M:%S'))} "
-    fill = max(0, width - vlen(tag) - vlen(clock) - 2)
-    out = [cyan("◤") + tag + dim("─" * fill) + clock + cyan("◥")]
+    clk = f" {dim(clock())} "
+    fill = max(0, width - vlen(tag) - vlen(clk) - 2)
+    out = [cyan("◤") + tag + dim("─" * fill) + clk + cyan("◥")]
 
     # 左邊弧形儀表，右邊遙測欄
     lab = lambda t: dim(cyan(f"{t:<5}"))
@@ -992,8 +1061,8 @@ def render(nodes, show_proc=False, force_stack=False, fit=False, want_qr=True):
     with _cf.ThreadPoolExecutor(max_workers=max(2, len(nodes))) as pool:
         snaps = list(pool.map(snapshot, nodes))       # 各節點同時抓，不要排隊等
     with _cf.ThreadPoolExecutor(max_workers=2) as pool:
-        q = pool.submit(sh, 'squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l"')
-        i = pool.submit(sh, 'sinfo -h -N -o "%N|%T|%C|%e/%m"')
+        q = pool.submit(sh, 'squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l"', key="squeue")
+        i = pool.submit(sh, 'sinfo -h -N -o "%N|%T|%C|%e/%m"', key="sinfo")
         slurm_data = (q.result().strip(), i.result().strip())
 
     if not fit:
@@ -1106,7 +1175,7 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
 
 
 def cluster_name():
-    for line in sh("scontrol show config").splitlines():
+    for line in sh("scontrol show config", key="scontrol_config").splitlines():
         if line.startswith("ClusterName"):
             v = line.split("=", 1)[1].strip()
             if v and v != "(null)":
