@@ -147,7 +147,8 @@ def clip(s, width):
         if w + cw > width:
             break
         out.append(s[i]); w += cw; i += 1
-    return "".join(out) + "\033[0m"
+    # 只有原字串帶色碼時才補 reset，--no-color 的輸出不能混進任何控制碼
+    return "".join(out) + ("\033[0m" if "\033" in s else "")
 
 
 def gradbar(pct, width=14, hot=False):
@@ -730,6 +731,12 @@ def qr_lines(quiet=4, wide=False):
 
     if len(grid) % 2:                              # 補成偶數列才好兩兩配對
         grid.append(list(pad_row))
+    if not _color:
+        # --no-color 不能用色碼，改用前景字元畫「亮」的模組、暗的留給背景。
+        # 深色背景的終端機上就是正常黑白的 QR；淺色背景會變成反相。
+        halves = {(0, 0): "█", (0, 1): "▀", (1, 0): "▄", (1, 1): " "}
+        return ["".join(halves[(top, bot)] for top, bot in zip(grid[y], grid[y + 1]))
+                for y in range(0, len(grid), 2)]
     out = []
     for y in range(0, len(grid), 2):
         line = ""
