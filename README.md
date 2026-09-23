@@ -124,7 +124,7 @@ Everything else is optional and degrades cleanly:
 | Missing | What happens |
 |---|---|
 | `nvidia-smi` / no GPU | node panels show CPU and RAM only, and the header switches its main gauge to CPU |
-| Slurm | pass `--nodes`; the queue panel just says there are no jobs |
+| Slurm | pass `--nodes` or `--ssh-config`; the queue panel just says there are no jobs |
 | a second machine | `slurmtop --nodes localhost` watches the box you are on, no SSH involved |
 
 CPU and memory are read from `/proc` on Linux and from `sysctl` / `vm_stat` /
@@ -140,6 +140,7 @@ slurmtop -n 5               # refresh every 5s
 slurmtop --once             # print one frame and exit (good for chat/logs)
 slurmtop --nodes a,b,c      # explicit node list, skip Slurm discovery
 slurmtop --nodes localhost  # single machine, no SSH, no Slurm needed
+slurmtop --ssh-config       # every Host in ~/.ssh/config (wildcards skipped)
 slurmtop --proc             # also list the processes on each GPU
 slurmtop --me               # only your own jobs and the GPUs they hold
 slurmtop --idle-samples 15  # flag held-but-idle GPUs after 15 samples (default 30)

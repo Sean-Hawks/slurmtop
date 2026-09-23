@@ -526,6 +526,29 @@ def discover_nodes():
     return nodes or [local_host()]
 
 
+def ssh_config_hosts(path="~/.ssh/config"):
+    """~/.ssh/config 裡的 Host 名稱，照出現順序、不重複。
+
+    含萬用字元（* ? ）或否定（!）的是規則不是機器，略過；Match 區塊也略過。
+    Include 不展開（通常是別的工具塞的設定），要監看的機器請寫在主設定檔。
+    """
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return []
+    hosts = []
+    for ln in text.splitlines():
+        m = re.match(r"^\s*host\s*(?:=|\s)\s*(.+?)\s*$", ln.split("#", 1)[0], re.I)
+        if not m:
+            continue
+        for h in m.group(1).split():
+            h = h.strip('"')
+            if h and not re.search(r"[*?!]", h) and h not in hosts:
+                hosts.append(h)
+    return hosts
+
+
 def node_hostnames():
     """Slurm NodeName -> NodeHostName, so we can tell which node is local."""
     m = {}
@@ -1731,6 +1754,10 @@ def parse_args(argv=None):
                     help="refresh interval in seconds (default: 2)")
     ap.add_argument("--once", action="store_true", help="print one frame and exit")
     ap.add_argument("--nodes", help="comma-separated node list (default: discover from Slurm)")
+    ap.add_argument("--ssh-config", nargs="?", const="~/.ssh/config", metavar="PATH",
+                    help="watch every Host in an ssh config file (default path: "
+                         "~/.ssh/config; patterns with * ? ! are skipped); "
+                         "combines with --nodes")
     ap.add_argument("--title", help="header title (default: Slurm ClusterName)")
     ap.add_argument("--proc", action="store_true", help="list processes on each GPU")
     ap.add_argument("--stack", action="store_true", help="force vertical layout")
@@ -1769,6 +1796,16 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
+def pick_nodes(args):
+    """--nodes 和 --ssh-config 可以一起用（合併、去重）；兩個都沒給才問 Slurm。"""
+    nodes = [n.strip() for n in (args.nodes or "").split(",") if n.strip()]
+    if args.ssh_config:
+        nodes += [h for h in ssh_config_hosts(args.ssh_config) if h not in nodes]
+    if args.nodes or args.ssh_config:
+        return nodes
+    return discover_nodes()
+
+
 def want_splash(args):
     return args.flair and not args.no_splash and not _ascii
 
@@ -1799,10 +1836,9 @@ def main():
         show_qr(args.qr_wide)
         return
 
-    nodes = [n.strip() for n in args.nodes.split(",") if n.strip()] if args.nodes \
-        else discover_nodes()
+    nodes = pick_nodes(args)
     if not nodes:
-        sys.exit("no nodes found - pass --nodes host1,host2")
+        sys.exit("no nodes found - pass --nodes host1,host2 or --ssh-config")
 
     if args.once:
         print(render(nodes, args))
