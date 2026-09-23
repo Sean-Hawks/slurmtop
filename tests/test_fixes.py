@@ -173,6 +173,17 @@ class HungNodeDoesNotFreeze(unittest.TestCase):
         self.assertLess(later, 0.5)                       # 三次加起來還不到一個 timeout
         self.assertEqual(m._fx_calls["n1"], 4)            # n1 每次都有新資料
 
+    def test_once_waits_longer_by_default(self):
+        """--once 沒有下一次刷新，慢的節點（第一次 ssh、nvidia-smi 慢）要多等一點。"""
+        m = load()
+        seen = []
+        with mock.patch.object(m, "fetch", side_effect=lambda jobs, t: seen.append(t) or {
+                k: (None, None) for k in jobs}):
+            m.render(["n1"], once=True)
+            m.render(["n1"])
+            m.render(["n1"], once=True, node_timeout=0.5)
+        self.assertEqual(seen, [m.ONCE_TIMEOUT, m.NODE_TIMEOUT, 0.5])
+
     def test_stale_expires(self):
         m = load()
         with fx_env("hang", SLURMTOP_FAKE_NOW="1000"):

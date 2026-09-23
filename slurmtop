@@ -708,6 +708,7 @@ def run_script(node, script, timeout=HARD_TIMEOUT):
 
 
 NODE_TIMEOUT = 6.0       # 每次刷新最多等每台節點幾秒（--node-timeout）
+ONCE_TIMEOUT = 20.0      # --once 只有一次機會，沒有下一次刷新可以補上，等久一點（同 main 以前的值）
 STALE_MAX = 60           # 超過這麼久拿不到新資料，就不再沿用舊的，改顯示連不上
 
 _inflight = {}           # key -> (thread, box, 開始時間)：還沒跑完的取樣
@@ -1779,7 +1780,10 @@ def render(nodes, opt=None, **kw):
     # 各節點和 Slurm 同時抓，每個最多等 --node-timeout 秒；卡住的沿用上一筆
     jobs = {("node", n): (snapshot, n) for n in nodes}
     jobs[("slurm",)] = (slurm_query, None)
-    got = fetch(jobs, opt.node_timeout)
+    timeout = opt.node_timeout
+    if timeout is None:
+        timeout = ONCE_TIMEOUT if getattr(opt, "once", False) else NODE_TIMEOUT
+    got = fetch(jobs, timeout)
     snaps = [got[("node", n)][0] for n in nodes]
     ages = [got[("node", n)][1] for n in nodes]
     slurm_data = got[("slurm",)][0] or ("", "", "")
@@ -2049,10 +2053,10 @@ def parse_args(argv=None):
     ap.add_argument("--ascii", action="store_true",
                     help="ASCII bars/sparklines for fonts without block glyphs")
     ap.add_argument("--lang", choices=sorted(STRINGS), help="ui language (default: auto)")
-    ap.add_argument("--node-timeout", type=float, default=NODE_TIMEOUT, metavar="SEC",
+    ap.add_argument("--node-timeout", type=float, default=None, metavar="SEC",
                     help="wait at most this long for each node per refresh; a node that "
-                         "misses it keeps its last reading, marked stale (default: %g)"
-                         % NODE_TIMEOUT)
+                         "misses it keeps its last reading, marked stale (default: %g, "
+                         "or %g with --once)" % (NODE_TIMEOUT, ONCE_TIMEOUT))
     ap.add_argument("--dense", action="store_true",
                     help="one summary line per node (automatic when the node panels "
                          "would not fit on the screen)")

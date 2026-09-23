@@ -150,7 +150,7 @@ slurmtop --fit              # squeeze into one screen instead of showing everyth
 slurmtop --no-color         # plain text
 slurmtop --flair            # turn on every animation, plus the boot splash
 slurmtop --no-splash        # with --flair, skip just the boot animation
-slurmtop --node-timeout 3   # wait at most 3s per node per refresh (default 6)
+slurmtop --node-timeout 3   # wait at most 3s per node per refresh (default 6, 20 with --once)
 slurmtop --qr               # print only the QR code and exit
 slurmtop --qr-panel         # show the QR panel beside the queue (off by default)
 slurmtop --qr-wide          # double-width QR modules, for fonts with gappy blocks
