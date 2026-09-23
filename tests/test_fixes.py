@@ -293,5 +293,23 @@ class ProcOverflowString(unittest.TestCase):
         self.assertEqual(set(m.STRINGS["en"]), set(m.STRINGS["zh"]))
 
 
+class WideChars(unittest.TestCase):
+    """bug 8：寬字判斷改用 unicodedata.east_asian_width。"""
+
+    def test_wide(self):
+        m = load()
+        for ch in ("中", "使", "Ａ", "😀", "🔥", "\U00020000", "가", "ア"):
+            self.assertTrue(m.unicodedata_wide(ch), repr(ch))
+        for ch in ("a", "-", "─", "│", "▕", "█", "◉", "°", "ｱ", "…"):
+            self.assertFalse(m.unicodedata_wide(ch), repr(ch))
+
+    def test_vlen_and_clip(self):
+        m = load()
+        self.assertEqual(m.vlen("GPU 😀 燒"), 9)
+        self.assertEqual(m.vlen("\U00020000x"), 3)            # 擴充 B：以前算成 1
+        self.assertEqual(m.vlen(m.clip("😀😀😀", 5)), 4)       # 不會切出半個字
+        self.assertEqual(m.vlen(m.pad("😀", 4)), 4)
+
+
 if __name__ == "__main__":
     unittest.main()

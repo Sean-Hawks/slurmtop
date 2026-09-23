@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from collections import defaultdict, deque
 
 GPU_Q = "index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw"
@@ -124,10 +125,12 @@ def vlen(s):
 
 
 def unicodedata_wide(ch):
-    o = ord(ch)
-    return (0x1100 <= o <= 0x115F or 0x2E80 <= o <= 0xA4CF or 0xAC00 <= o <= 0xD7A3
-            or 0xF900 <= o <= 0xFAFF or 0xFE30 <= o <= 0xFE6F or 0xFF00 <= o <= 0xFF60
-            or 0xFFE0 <= o <= 0xFFE6)
+    """終端機裡佔兩格的字：Unicode 東亞寬度是 W（寬）或 F（全形）。
+
+    以前手寫碼位區間，漏了 emoji、CJK 擴充 B 以後的漢字等等。框線、方塊這類
+    「A（模稜兩可）」的字元照大多數終端機的預設當一格。
+    """
+    return unicodedata.east_asian_width(ch) in ("W", "F")
 
 
 def pad(s, width):
