@@ -1834,7 +1834,7 @@ def render(nodes, opt=None, **kw):
                                sp, compact, jcols, slurm_data=slurm_data,
                                want_qr=want_qr and not compact, ages=ages,
                                me=me, head_snaps=head_snaps, dense=dense,
-                              slurm_age=slurm_age)
+                               slurm_age=slurm_age)
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
