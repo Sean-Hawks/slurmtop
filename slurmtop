@@ -236,6 +236,11 @@ def fmt_dur(t):
 
 
 _hist = defaultdict(lambda: deque(maxlen=HIST))
+
+
+def hist(key):
+    """繪圖用的唯讀歷史。用 get 而不是 _hist[key]，免得 defaultdict 在畫圖時偷偷新增項目。"""
+    return _hist.get(key, ())
 _cpu_prev = {}                               # 每台上一次的 /proc/stat，用來算 CPU%
 # 每次重畫 +1，用來跑動畫。測試用 SLURMTOP_FAKE_TICK 固定起點，畫面才可重現。
 _tick = int(os.environ.get("SLURMTOP_FAKE_TICK", "0") or 0)
@@ -383,7 +388,7 @@ def spinner():
 
 def trend(key, now):
     """跟最近幾筆比，回傳 ▲ / ▼ / 中性符號。"""
-    h = list(_hist[key])[:-1][-4:]
+    h = list(hist(key))[:-1][-4:]
     if len(h) < 2:
         return grey("·")
     avg = sum(h) / len(h)
@@ -647,9 +652,6 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     tmax = max((int(float(g[4])) for g in d["gpus"]), default=0)
     mem_pct = d["mem_used"] / d["mem_total"] * 100 if d["mem_total"] else 0
 
-    _hist[(node, "cpu")].append(d["cpu_pct"])
-    _hist[(node, "gpu")].append(avg_util)
-
     # 標題列
     where = T("local") if is_local(node) else T("remote")
     dot = "o" if _ascii else "◉"
@@ -668,15 +670,13 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
     # 不用 hash()：字串雜湊每次執行都不同，畫面會不可重現
     rows.append(trace(TL + left + edge + right + TR, tick_offset=sum(map(ord, node)) % 7))
 
-    sp = (" " + spark(_hist[(node, "cpu")], 8)) if sparks else ""
+    sp = (" " + spark(hist((node, "cpu")), 8)) if sparks else ""
     ld = d["load"]
     line(f" {dim(cyan('CPU'))} {gradbar(d['cpu_pct'])} {d['cpu_pct']:5.1f}%"
          f" {trend((node, 'cpu'), d['cpu_pct'])}{sp} "
          f"{dim(f'load {ld[0]:.0f} {ld[1]:.0f} {ld[2]:.0f}')}")
     mem_txt = "%.0f/%.0f GiB" % (d["mem_used"] / 1024, d["mem_total"] / 1024)
     line(f" {dim(cyan('MEM'))} {gradbar(mem_pct)} {mem_pct:5.1f}%   {dim(mem_txt)}")
-    for g in d["gpus"]:                      # 歷史一定要更新，即使沒畫出來
-        _hist[(node, f"g{g[0]}")].append(float(g[1]))
 
     if compact:
         line(f" {bold('GPU')} {gradbar(avg_util)} {avg_util:5.1f}% "
@@ -689,7 +689,7 @@ def node_panel(node, d, width, show_proc, sparks, compact=False):
         idx, util = g[0], float(g[1])
         mu, mt, temp, pw = float(g[2]), float(g[3]), int(float(g[4])), float(g[5])
         tcol = heat(max(0, min(100, (temp - 35) / 50 * 100)))
-        sp = (" " + spark(_hist[(node, f"g{idx}")], 8)) if sparks else ""
+        sp = (" " + spark(hist((node, f"g{idx}")), 8)) if sparks else ""
         line(f" {dim(cyan('G'))}{bold(idx)} {gradbar(util, 12, util >= HOT_UTIL)} "
              f"{util:3.0f}%{plume(temp, util)}{sp} "
              f"{mu/1024:5.1f}G {rgb(*tcol, f'{temp:>2}°')} {dim(f'{pw:4.0f}W')}")
@@ -886,7 +886,6 @@ def cpu_header(live, width):
     cores = sum(d["ncpu"] for d in live)
     mem_u = sum(d["mem_used"] for d in live) / 1024
     mem_t = sum(d["mem_total"] for d in live) / 1024
-    _hist[("all", "gpu")].append(avg)              # 沿用同一條歷史，示波器照畫
 
     tag = f" {bold(cyan('SLURMTOP'))} {dim('//')} {bold(_title)} "
     clk = f" {dim(clock())} "
@@ -897,13 +896,13 @@ def cpu_header(live, width):
     gauge = [
         "  " + arc_gauge(avg),
         "  " + pad(f"{bold('%.1f%%' % avg)} {dim(cyan('CPU'))}", 17),
-        "  " + pad(f"{trend(('all', 'gpu'), avg)} {spark(_hist[('all', 'gpu')], 12)}", 17),
+        "  " + pad(f"{trend(('all', 'gpu'), avg)} {spark(hist(('all', 'gpu')), 12)}", 17),
     ]
     tele = [
         f"{lab('CORE')} {bold(str(len(live)))} {dim('nodes')} {dim('·')} "
         f"{cores} {dim(T('threads'))}",
         f"{lab('CPU')}  {gradbar(avg, 18, avg >= 90)} {bold('%5.1f%%' % avg)} "
-        f"{trend(('all', 'gpu'), avg)}  {spark(_hist[('all', 'gpu')], 12)}",
+        f"{trend(('all', 'gpu'), avg)}  {spark(hist(('all', 'gpu')), 12)}",
         f"{lab('MEM')}  {mem_u:.0f}{dim('/')}{mem_t:.0f} GiB   {dim(T('no_gpu'))}",
     ]
     for i in range(max(len(gauge), len(tele))):
@@ -927,7 +926,6 @@ def cluster_header(snaps, width):
     tmax = max(int(float(g[4])) for g in gpus)
     vram_u = sum(float(g[2]) for g in gpus) / 1024
     vram_t = sum(float(g[3]) for g in gpus) / 1024
-    _hist[("all", "gpu")].append(avg)
 
     # 頂列：◤ SLURMTOP ── cluster ─────────── 時間 ◥
     tag = f" {bold(cyan('SLURMTOP'))} {dim('//')} {bold(_title)} "
@@ -940,7 +938,7 @@ def cluster_header(snaps, width):
     gauge = [
         "  " + arc_gauge(avg),
         "  " + pad(f"{bold('%.1f%%' % avg)} {dim(cyan('UTIL'))}", 17),
-        "  " + pad(f"{trend(('all', 'gpu'), avg)} {spark(_hist[('all', 'gpu')], 12)}", 17),
+        "  " + pad(f"{trend(('all', 'gpu'), avg)} {spark(hist(('all', 'gpu')), 12)}", 17),
     ]
     tele = [
         f"{lab('CORE')} {bold(str(busy))}/{len(gpus)} {dim('online')}"
@@ -1052,6 +1050,29 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None):
     return rows, hidden
 
 
+def update_history(nodes, snaps):
+    """每次刷新只呼叫一次，在拿到 snapshot 之後。
+
+    歷史（sparkline、趨勢箭頭、示波器）只在這裡寫入。render() 為了挑版面會把
+    _frame() 畫好幾遍，所以繪圖函式一律只讀，不然一次刷新會寫進好幾筆。
+    """
+    for node, d in zip(nodes, snaps):
+        if not d:
+            continue
+        utils = [float(g[1]) for g in d["gpus"]]
+        _hist[(node, "cpu")].append(d["cpu_pct"])
+        _hist[(node, "gpu")].append(sum(utils) / len(utils) if utils else d["cpu_pct"])
+        for g in d["gpus"]:                    # 每張卡的歷史一定要更新，即使沒畫出來
+            _hist[(node, f"g{g[0]}")].append(float(g[1]))
+    live = [d for d in snaps if d]
+    if not live:
+        return
+    utils = [float(g[1]) for d in live for g in d["gpus"]]
+    # 全叢集那條：有 GPU 看 GPU 平均，CPU-only 叢集改看 CPU 平均，示波器照畫
+    _hist[("all", "gpu")].append(sum(utils) / len(utils) if utils
+                                 else sum(d["cpu_pct"] for d in live) / len(live))
+
+
 def render(nodes, show_proc=False, force_stack=False, fit=False, want_qr=True):
     size = shutil.get_terminal_size((120, 45))
     cols, lines = size.columns, size.lines
@@ -1064,6 +1085,7 @@ def render(nodes, show_proc=False, force_stack=False, fit=False, want_qr=True):
         q = pool.submit(sh, 'squeue -h -o "%i|%j|%t|%M|%L|%D|%C|%b|%R|%l"', key="squeue")
         i = pool.submit(sh, 'sinfo -h -N -o "%N|%T|%C|%e/%m"', key="sinfo")
         slurm_data = (q.result().strip(), i.result().strip())
+    update_history(nodes, snaps)
 
     if not fit:
         # 預設：每張卡的明細與整個佇列都完整顯示，畫面長一點沒關係。
@@ -1101,11 +1123,11 @@ def render(nodes, show_proc=False, force_stack=False, fit=False, want_qr=True):
 def scope_section(width, height=6):
     """全叢集負載示波器。"""
     inner = width - 2
-    n = len(_hist[("all", "gpu")])
+    n = len(hist(("all", "gpu")))
     title = (f"{dim(cyan('┤'))} {bold('LOAD')} {dim('//')} "
              f"{dim('last %d samples' % min(n, inner - 2))} {dim(cyan('├'))}")
     rows = [trace(TL + title + H * max(0, inner - vlen(title)) + TR)]
-    for line in scope(_hist[("all", "gpu")], inner - 2, height):
+    for line in scope(hist(("all", "gpu")), inner - 2, height):
         rows.append(V + " " + pad(line, inner - 2) + " " + V)
     rows.append(BL + H * inner + BR)
     return rows
