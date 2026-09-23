@@ -31,13 +31,18 @@ def proc_line(i, pid, mem, name, node="n1"):
     return f"{uuid(i, node)}, {pid}, {mem}, {name}"
 
 
+DISK_42 = "1843200000 774144000 1069056000"      # df -Pk / 的 KiB：1.7T 用了 42%
+
+
 def remote(gpus=(), procs=(), jobs=(), cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",
-           load="7.0 6.5 6.1", ncpu=224, mem=(2063000, 976000)):
+           load="7.0 6.5 6.1", ncpu=224, mem=(2063000, 976000), disk=DISK_42,
+           net="918273645 123456789"):
     """組出一份 REMOTE 的輸出。參數順序跟腳本的段落一樣。jobs 是 "pid job user"。"""
     out = ["@@cpu", cpu, "@@load", load, str(ncpu), "@@mem", "%d %d" % mem, "@@gpu"]
     out += list(gpus)
     out += ["@@proc"] + list(procs)
     out += ["@@jobs"] + list(jobs)
+    out += ["@@disk", disk, "@@net", net]
     return "\n".join(out) + "\n"
 
 
@@ -160,7 +165,8 @@ def main():
     # 6. 沒有 GPU 的機器：一台 macOS 筆電（CPU% 直接給百分比）、一台 Linux 伺服器，沒有 Slurm
     write("nogpu", {"hostname.txt": "mac\n",
                     "node/mac.txt": remote(cpu="PCT 23.4", load="2.10 2.31 2.50", ncpu=8,
-                                           mem=(16384, 11800)),
+                                           mem=(16384, 11800),
+                                           disk="971350180 487314376 448005680"),
                     "node/cpu1.txt": remote(load="3.0 2.0 1.0", ncpu=64, mem=(257000, 64000))})
 
     # 7. squeue 的 %b 三種寫法同時出現（舊版 gres:gpu:N、新版 gres/gpu:N、帶型號）
@@ -234,8 +240,10 @@ def main():
 
     # 9. 連續兩次取樣（CPU% 要兩筆 /proc/stat 才算得出來）
     write("seq", {"hostname.txt": "n1\n",
-                  "node/n1.1.txt": remote(cpu="cpu  1000 0 500 8000 100 0 20 0 0 0"),
-                  "node/n1.2.txt": remote(cpu="cpu  1600 0 700 8100 100 0 20 0 0 0"),
+                  "node/n1.1.txt": remote(cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",
+                                          net="1000000 2000000"),
+                  "node/n1.2.txt": remote(cpu="cpu  1600 0 700 8100 100 0 20 0 0 0",
+                                          net="3097152 2204800"),
                   "node/n1.txt": remote(cpu="cpu  2200 0 900 8200 100 0 20 0 0 0")})
 
 

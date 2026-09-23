@@ -178,6 +178,8 @@ rest are read over SSH, one round trip each per refresh.
 | `GPUs ▉▉▁▁▁▁▁▁ │ ▉▉▉▉▉▉▉▉` | one cell per GPU in the cluster, grouped by node — the whole fleet at a glance; `-` is a GPU whose utilisation cannot be read (MIG) |
 | `-` in a GPU row | nvidia-smi reported `[N/A]` or nothing for that field |
 | `stale 12s` in a node title | that node missed the refresh deadline (`--node-timeout`); its last reading is shown until it answers again, for up to a minute, after which it is shown as unreachable |
+| `DSK ▕███░░▏ 42.0%  738G/1.7T` | root filesystem usage (on macOS the data volume, since `/` is the read-only system volume); red at 90 % |
+| `NET ↓1.2M/s ↑300K/s` | receive / send rate over all physical interfaces (loopback, container, bridge and VPN interfaces are left out); `-` until the second refresh |
 | `871 hawks` at the end of a GPU row | the Slurm job holding that GPU and who submitted it; `871+1` means two jobs share it |
 | `(root)` at the end of a GPU row | a process that is not part of any Slurm job, and its owner |
 | `IDLE` in a GPU row | held by a job but below 5 % utilisation for the last `--idle-samples` refreshes |
@@ -255,8 +257,10 @@ your scrollback.
 
 ## Notes
 
-- Reads only `nvidia-smi`, `/proc/stat`, `/proc/loadavg`, `free`, `squeue` and
-  `sinfo`. Nothing is written anywhere and no daemon is installed.
+- Reads only `nvidia-smi`, `/proc/stat`, `/proc/loadavg`, `/proc/net/dev`,
+  `/proc/<pid>/cgroup`, `free`, `df`, `squeue`, `sinfo` and `scontrol` (plus
+  `top`, `sysctl`, `vm_stat` and `netstat` on macOS). Nothing is written
+  anywhere and no daemon is installed.
 - Sparkline history lives in the process, so it starts empty on each launch.
 - AMD/Intel GPUs are not supported (patches welcome — the only coupling is the
   `nvidia-smi --query-gpu` call in `REMOTE`).

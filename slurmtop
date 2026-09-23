@@ -631,6 +631,25 @@ echo "$apps" | cut -d, -f2 | tr -d ' ' | sort -u | while read -r pid; do
   user=$(stat -c %U "/proc/$pid" 2>/dev/null || ps -o user= -p "$pid" 2>/dev/null)
   echo "$pid ${{job:--}} ${{user:--}}"
 done
+echo '@@disk'
+# 根目錄的 KiB：總量 已用 可用。macOS 的 / 是唯讀的系統卷（永遠只用了幾 %），
+# 使用者的資料在 /System/Volumes/Data，那個才是會滿的。
+root=/
+[ -d /System/Volumes/Data ] && root=/System/Volumes/Data
+df -Pk "$root" 2>/dev/null | awk 'NR==2 {{print $2, $3, $4}}'
+echo '@@net'
+# 實體網卡累計收／送的 bytes，速度由兩次取樣相減。不算 lo 和容器、VPN 的虛擬網卡，
+# 否則同一份流量會經過好幾張卡被重複計算。
+if [ -r /proc/net/dev ]; then
+  awk 'NR > 2 {{ sub(/^ */, ""); split($0, a, /[: ]+/)
+         if (a[1] !~ /^(lo|veth|docker|br-|virbr|cni|flannel|cali|tun|tap)/) {{ rx += a[2]; tx += a[10] }} }}
+       END {{ printf "%.0f %.0f\\n", rx, tx }}' /proc/net/dev
+elif command -v netstat >/dev/null 2>&1; then
+  # macOS：每張卡有一行 <Link#N>；沒有 MAC 位址的卡（utun 之類）少一欄
+  netstat -ibn 2>/dev/null | awk '$3 ~ /^<Link/ && $1 !~ /^(lo|gif|stf|utun|awdl|llw|bridge|anpi|ap[0-9])/ {{
+         if (NF >= 11) {{ rx += $7; tx += $10 }} else {{ rx += $6; tx += $9 }} }}
+       END {{ printf "%.0f %.0f\\n", rx, tx }}'
+fi
 """
 
 
@@ -963,7 +982,53 @@ def snapshot(node):
     d["gpus"] = [g for g in map(parse_gpu, parts[3].splitlines()) if g]
     d["procs"] = [p for p in map(parse_proc, parts[4].splitlines()) if p]
     link_procs(d["gpus"], d["procs"], parse_pidjobs(secs.get("jobs", "")))
+    d["disk"] = parse_disk(secs.get("disk", ""))
+    d["net"] = None                              # (收, 送) bytes/s；第一次取樣還算不出來
+    cur = parse_net(secs.get("net", ""))
+    if cur:
+        now = time.monotonic()
+        prev = _net_prev.get(node)
+        _net_prev[node] = (cur, now)
+        if prev:
+            d["net"] = net_rate(prev[0], cur, now - prev[1])
     return d
+
+
+_net_prev = {}                                   # 節點 -> ((收, 送) 累計 bytes, 取樣時間)
+
+
+def parse_disk(text):
+    """df -Pk 的「總量 已用 可用」（KiB）-> {total, used, pct}，讀不到回傳 None。"""
+    f = [num(x) for x in (text or "").split()[:3]]
+    if len(f) < 3 or None in f or f[0] <= 0:
+        return None
+    total, used, avail = f
+    # 跟 df 的 Capacity 一樣用 已用 / (已用 + 可用)，保留給 root 的空間不算
+    pct = 100.0 * used / (used + avail) if used + avail > 0 else 0.0
+    return {"total": total * 1024, "used": used * 1024, "pct": pct}
+
+
+def parse_net(text):
+    f = [num(x) for x in (text or "").split()[:2]]
+    return tuple(f) if len(f) == 2 and None not in f else None
+
+
+def net_rate(prev, cur, dt):
+    """兩次累計值相減算速度。計數器歸零（重開機、網卡重設）或時間不對時回傳 None。"""
+    if dt <= 0:
+        return None
+    rx, tx = (cur[0] - prev[0]) / dt, (cur[1] - prev[1]) / dt
+    return (rx, tx) if rx >= 0 and tx >= 0 else None
+
+
+def fmt_bytes(n, unit=""):
+    """1234567 -> '1.2M'。以 1024 為底。"""
+    if n is None:
+        return "-"
+    for u in ("", "K", "M", "G", "T", "P"):
+        if abs(n) < 1024 or u == "P":
+            return ("%.0f%s%s" if u == "" or abs(n) >= 100 else "%.1f%s%s") % (n, u, unit)
+        n /= 1024.0
 
 
 def node_panel(node, d, width, show_proc, sparks, compact=False, age=None):
@@ -1017,6 +1082,9 @@ def node_panel(node, d, width, show_proc, sparks, compact=False, age=None):
          f"{dim(f'load {ld[0]:.0f} {ld[1]:.0f} {ld[2]:.0f}')}")
     mem_txt = "%.0f/%.0f GiB" % (d["mem_used"] / 1024, d["mem_total"] / 1024)
     line(f" {dim(cyan('MEM'))} {gradbar(mem_pct)} {mem_pct:5.1f}%   {dim(mem_txt)}")
+    io = disk_net(d, inner)
+    if io and not compact:
+        line(io)
 
     if compact:
         line(f" {bold('GPU')} {gradbar(avg_util)} {fnum(st['util'], '%5.1f%%')} "
@@ -1048,6 +1116,39 @@ def node_panel(node, d, width, show_proc, sparks, compact=False, age=None):
 
 
 EIGHTHS = " ▁▂▃▄▅▆▇█"
+
+
+DISK_ALERT = 90          # 根目錄用到這個 % 以上就警示
+
+
+def disk_net(d, width=999):
+    """「DSK ▕██░░▏ 42.0%  738G/1.7T   NET ↓1.2M/s ↑300K/s」，兩個都讀不到就是空字串。
+
+    面板窄的時候依序省掉容量、長條，網速一定留著。
+    """
+    disk, net = d.get("disk"), d.get("net")
+    if not disk and "net" not in d:
+        return ""
+    down, up = ("v", "^") if _ascii else ("↓", "↑")
+    if net:
+        nt = (f"{dim(cyan('NET'))} {down}{fmt_bytes(net[0], '/s'):>8} "
+              f"{up}{fmt_bytes(net[1], '/s'):>8}")
+    else:                                         # 第一次取樣，還沒有速度
+        nt = f"{dim(cyan('NET'))} {grey('-')}"
+    if not disk:
+        return f" {dim(cyan('DSK'))} {grey('-')}   " + nt
+    pct = disk["pct"]
+    txt = f"{pct:5.1f}%"
+    if pct >= DISK_ALERT:
+        txt = rgb(231, 76, 60, bold(txt))
+    size = dim(fmt_bytes(disk["used"]) + "/" + fmt_bytes(disk["total"]))
+    for dk in (f" {dim(cyan('DSK'))} {gradbar(pct)} {txt}   {size}",
+               f" {dim(cyan('DSK'))} {gradbar(pct)} {txt}",
+               f" {dim(cyan('DSK'))} {txt}"):
+        out = dk + "   " + nt
+        if vlen(out) <= width:
+            break
+    return out
 
 
 def owner_tag(node, g):

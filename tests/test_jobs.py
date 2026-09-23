@@ -29,7 +29,8 @@ class RemoteJobsSegment(unittest.TestCase):
                 f.write(body)
 
     def run_segment(self, apps):
-        seg = self.m.REMOTE.split("echo '@@jobs'")[1].replace("/proc/", self.tmp + "/")
+        seg = self.m.REMOTE.split("echo '@@jobs'")[1].split("echo '@@disk'")[0]
+        seg = seg.replace("/proc/", self.tmp + "/")
         script = "apps=%s\n%s" % ("'" + apps + "'", seg)
         p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=20)
         self.assertEqual(p.stderr, "")
