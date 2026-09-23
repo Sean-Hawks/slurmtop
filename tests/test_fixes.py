@@ -209,5 +209,30 @@ class HungNodeDoesNotFreeze(unittest.TestCase):
         self.assertEqual(left.strip(), "", "hung ssh was not killed")
 
 
+class GresFormats(unittest.TestCase):
+    """bug 4：squeue %b 的 GPU 數要認得 gres:gpu:N、gres/gpu:N、gres/gpu:型號:N。"""
+
+    def test_gpu_count(self):
+        gc = load().gpu_count
+        cases = {
+            "gres:gpu:8": 8, "gres/gpu:8": 8, "gres/gpu:h200:8": 8, "gres:gpu:h200:2": 2,
+            "gpu:4": 4, "gpu:a100:2": 2, "gres/gpu": 1, "gres/gpu:h200": 1,
+            "gres/gpu:h200:8(IDX:0-7)": 8, "gres:gpu:2(IDX:0,2)": 2,
+            "gres/gpu:4,gres/shard:2": 4, "gres/shard:2,gres/gpu:a100:1,gres/gpu:v100:2": 3,
+            "N/A": None, "": None, None: None, "gres/shard:4": None, "gres/gpumem:10G": None,
+        }
+        for gres, want in cases.items():
+            self.assertEqual(gc(gres), want, gres)
+
+    def test_queue_column(self):
+        out = run("gres", "--no-color", "--no-qr").stdout
+        rows = {ln.split()[1]: ln for ln in out.splitlines()
+                if ln.startswith("│") and len(ln.split()) > 2 and ln.split()[1].isdigit()}
+        for jid in ("1001", "1002", "1003"):
+            self.assertIn(" 8 ", rows[jid], rows[jid])
+        self.assertIn(" 2 ", rows["1004"])
+        self.assertNotIn("gres", out)
+
+
 if __name__ == "__main__":
     unittest.main()

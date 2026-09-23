@@ -1126,6 +1126,32 @@ def progress(elapsed, limit, width=8):
     return rgb(*col, full * filled) + grey(empty * (width - filled))
 
 
+GRES_GPU = re.compile(r"^(?:gres[:/])?gpu(?::([^:]+))?(?::(\d+))?$")
+
+
+def gpu_count(gres):
+    """squeue %b 裡的 GPU 張數，沒有 GPU 回傳 None。
+
+    各版 Slurm 的寫法都要認得：gres:gpu:8（舊版）、gres/gpu:8（新版 TRES）、
+    gres/gpu:h200:8（帶型號）、後面可能接 (IDX:0-7)，也可能跟別的 gres 用逗號
+    串在一起（gres/gpu:4,gres/shard:2）。只寫型號沒寫數量時算 1 張。
+    """
+    total, found = 0, False
+    for item in re.sub(r"\([^)]*\)", "", gres or "").split(","):
+        m = GRES_GPU.match(item.strip())
+        if not m:
+            continue
+        found = True
+        kind, count = m.groups()
+        if count:
+            total += int(count)
+        elif kind and kind.isdigit():         # gpu:8 -> 第一段就是數量
+            total += int(kind)
+        else:                                 # gpu 或 gpu:h200 -> 1 張
+            total += 1
+    return total if found else None
+
+
 def job_cell(f, narrow, where_w=20):
     """一個 job 的一列字串。narrow 用在多欄排版。"""
     jid, name, st, elapsed, left, nodes, cpus, gres, where = f[:9]
@@ -1136,7 +1162,8 @@ def job_cell(f, narrow, where_w=20):
         badge = rgb(241, 196, 15, ("." if _ascii else "◌") + " " + T("pend"))
     else:
         badge = grey(f"o {st}" if _ascii else f"○ {st}")
-    gpu = gres.replace("gres:gpu:", "").replace("N/A", "-")
+    n = gpu_count(gres)
+    gpu = "-" if n is None else str(n)
     if narrow:
         return (f" {bold('%7s' % jid[:7])} {name[:9]:<9} {pad(badge, 6)} "
                 f"{pad(fmt_dur(elapsed), 7)} {progress(elapsed, limit, 5)} "
