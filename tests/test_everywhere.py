@@ -241,5 +241,83 @@ class Jetson(unittest.TestCase):
         self.assertEqual([g["vendor"] if "vendor" in g else "nvidia" for g in d["gpus"]], ["nvidia"])
 
 
+NETSTAT_FREEBSD = """\
+Name    Mtu Network       Address              Ipkts Ierrs Idrop     Ibytes    Opkts Oerrs     Obytes  Coll
+em0    1500 <Link#1>      08:00:27:aa:bb:cc   500000     0     0  700000000   300000     0   40000000     0
+em0       - 10.0.2.0/24   10.0.2.15           490000     -     -  690000000   290000     -   39000000     -
+lo0   16384 <Link#2>      lo0                     10     0     0       1000       10     0       1000     0
+pflog0 33160 <Link#3>                              0     0     0          0        0     0          0     0
+ix0    9000 <Link#4>                            1000     0     0      12345     2000     0      67890     0
+"""
+
+
+class PosixShells(unittest.TestCase):
+    """REMOTE 只能用 POSIX sh：Debian/Ubuntu 的 /bin/sh 是 dash，FreeBSD 沒有 bash。"""
+
+    def remote(self):
+        return load().REMOTE
+
+    def test_runs_everywhere(self):
+        import shutil, subprocess
+        shells = [sh for sh in ("bash", "dash", "ksh", "sh") if shutil.which(sh)]
+        self.assertTrue(shells)
+        for sh in shells:
+            with self.subTest(sh):
+                p = subprocess.run([sh, "-s"], input=self.remote(), capture_output=True,
+                                   text=True, timeout=60)
+                self.assertEqual(p.stderr, "", sh)
+                secs = load().sections(p.stdout)
+                for k in ("cpu", "load", "mem", "gpu", "proc", "jobs", "disk", "net"):
+                    self.assertIn(k, secs, sh)
+
+    def test_login_shells(self):
+        """ssh 會用對方的登入 shell 解讀指令：csh、tcsh、zsh、fish 都要能跑。"""
+        import shutil, subprocess
+        m = load()
+        for login in ("csh", "tcsh", "zsh", "fish"):
+            if not shutil.which(login):
+                continue
+            with self.subTest(login):
+                cmd = "sh -c '%s'" % m.SHELL_PICK
+                p = subprocess.run([login, "-c", cmd], input=m.REMOTE, capture_output=True,
+                                   text=True, timeout=60)
+                self.assertIn("gpu", m.sections(p.stdout), p.stderr)
+
+    def test_freebsd_netstat(self):
+        import subprocess, tempfile
+        m = load()
+        fd, path = tempfile.mkstemp()
+        with os.fdopen(fd, "w") as f:
+            f.write(NETSTAT_FREEBSD)
+        self.addCleanup(os.remove, path)
+        seg = m.REMOTE.split("echo '@@net'")[1].replace("[ -r /proc/net/dev ]", "false") \
+                                              .replace("netstat -ibn 2>/dev/null", "cat " + path)
+        out = subprocess.run(["sh", "-c", seg], capture_output=True, text=True).stdout.strip()
+        # em0 的 <Link> 行 + 沒有 MAC 的 ix0（少一欄）；lo0、pflog0 不算
+        self.assertEqual(out, "%d %d" % (700000000 + 12345, 40000000 + 67890))
+
+    def test_freebsd_memory(self):
+        """用假的 sysctl 跑 FreeBSD 的記憶體分支。"""
+        import subprocess
+        body = self.remote().split("elif sysctl -n vm.stats.vm.v_free_count >/dev/null 2>&1; then")[1] \
+                            .split("else")[0]
+        fake = ("sysctl() { case \"$2\" in hw.pagesize) echo 4096;; hw.physmem) echo 17179869184;;"
+                " vm.stats.vm.v_free_count) echo 1048576;; vm.stats.vm.v_inactive_count) echo 262144;;"
+                " esac; }\n")
+        out = subprocess.run(["sh", "-c", fake + body], capture_output=True, text=True).stdout
+        self.assertEqual(out.strip(), "16384 %d" % (16384 - (1048576 + 262144) * 4096 // 1048576))
+
+    def test_cputime(self):
+        """FreeBSD 的 kern.cp_time：user nice sys intr idle，閒置只算第 5 欄。"""
+        m = load()
+        base = "@@load\n1 1 1\n4\n@@mem\n100 50\n@@gpu\n@@proc\n"
+        outs = ["@@cpu\nCPUTIME 100 0 50 50 800\n" + base,
+                "@@cpu\nCPUTIME 160 0 80 60 900\n" + base]
+        with mock.patch.object(m, "run_script", side_effect=outs):
+            m.snapshot("bsd")
+            d = m.snapshot("bsd")
+        self.assertAlmostEqual(d["cpu_pct"], 100.0 * (100 - 0) / 200 * 1)   # 忙 100 / 總 200
+
+
 if __name__ == "__main__":
     unittest.main()
