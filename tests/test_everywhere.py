@@ -562,5 +562,113 @@ class HostileStrings(unittest.TestCase):
         self.assertNotIn("\x1b", json.dumps(d, ensure_ascii=False))
 
 
+def _m(t, util, power, idle=False, cpu=10.0, stale=None, job="7"):
+    """組一筆最小的 model()，給 summarize() 用。"""
+    return {"time": t, "cluster": "c", "summary": {"gpu_util": util},
+            "nodes": [{"name": "n1", "up": True, "stale_s": stale, "cpu_pct": cpu, "mem_used_mib": 100,
+                       "mem_total_mib": 1000, "gpus": [
+                           {"index": "0", "vendor": "nvidia", "model": None, "util": util,
+                            "mem_used_mib": 500, "mem_total_mib": 1000, "temp_c": 60,
+                            "power_w": power, "job": job, "user": "u", "idle_held": idle}]}]}
+
+
+class Report(unittest.TestCase):
+    """--report／--html／--log：效能評估。"""
+
+    def test_summarize_math(self):
+        m = load()
+        s = [_m(0, 0, 100, idle=True), _m(10, 50, 200, idle=True), _m(20, 100, 300), _m(30, None, None)]
+        r = m.summarize(s)
+        g = r["gpus"][0]
+        self.assertEqual(r["seconds"], 30)
+        self.assertEqual(g["util_avg"], 50.0)
+        self.assertEqual(g["util_max"], 100)
+        self.assertEqual(g["util_p95"], 100)
+        self.assertEqual(g["busy_pct"], round(100 * 2 / 3, 1))
+        self.assertEqual(g["power_avg_w"], 200.0)
+        # 梯形法：(100+200)/2*10 + (200+300)/2*10 = 4000 J = 1.11 Wh
+        self.assertEqual(g["energy_wh"], round(4000 / 3600, 2))
+        self.assertEqual(g["idle_held_s"], 20)                  # 2 次 × 每次 10 秒
+        self.assertEqual(r["nodes"][0]["cpu_avg"], 10.0)
+        self.assertEqual(m.fmt_secs(20), "20s")
+        self.assertEqual(m.fmt_secs(3700), "1h01m")
+        self.assertEqual(m.fmt_secs(0), "-")
+
+    def test_stale_samples_skipped(self):
+        m = load()
+        r = m.summarize([_m(0, 80, 100), _m(10, 80, 100, stale=10)])
+        self.assertEqual(len(r["gpus"][0]["util_series"]), 1)
+
+    def test_cli_duration(self):
+        import tempfile
+        html = tempfile.mktemp(suffix=".html")
+        self.addCleanup(lambda: os.path.exists(html) and os.remove(html))
+        p = run("full2x8", "--report", "0.6", "-n", "0.2", "--html", html)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("n1 G0", p.stdout)
+        self.assertIn("98%", p.stdout)
+        self.assertIn("cluster GPU average: 99.2%", p.stdout)
+        with open(html, encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("<svg", page)
+        self.assertNotIn("<script", page)                       # 報告頁不需要 JavaScript
+
+    def test_cli_json(self):
+        # 報告要算時間長度，這裡不能用固定的假時鐘
+        p = run("idleheld", "--report", "0.4", "-n", "0.2", "--json", "--idle-samples", "1",
+                SLURMTOP_FAKE_NOW="")
+        r = json.loads(p.stdout)
+        self.assertGreaterEqual(r["samples"], 2)
+        self.assertEqual(len(r["gpus"]), 16)
+        self.assertGreater(next(g for g in r["gpus"] if g["gpu"] == "2")["idle_held_s"], 0)
+
+    def test_wrap_command(self):
+        import tempfile
+        html = tempfile.mktemp(suffix=".html")
+        self.addCleanup(lambda: os.path.exists(html) and os.remove(html))
+        p = run("full2x8", "--report", "-n", "0.2", "--html", html, "--",
+                "sh", "-c", "sleep 0.5; exit 7", "<script>x</script>", "--")
+        self.assertEqual(p.returncode, 7, p.stderr)              # 照指令的結束碼離開
+        self.assertIn("(exit 7)", p.stdout)
+        with open(html, encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("&lt;script&gt;", page)                  # 指令字串有跳脫
+        self.assertNotIn("<script>x", page)
+
+    def test_bad_args(self):
+        self.assertEqual(run("full2x8", "stray").returncode, 2)
+        self.assertEqual(run("full2x8", "--html", "x.html").returncode, 2)
+
+    def test_csv_log(self):
+        import csv, tempfile
+        path = tempfile.mktemp(suffix=".csv")
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        for _ in range(2):                                     # 第二次附加在後面，不重寫標題
+            p = run("idleheld", "--report", "0.2", "-n", "0.2", "--log", path, "--idle-samples", "1")
+            self.assertEqual(p.returncode, 0, p.stderr)
+        with open(path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read().count("time,node,kind"), 1)
+        nodes = [r for r in rows if r["kind"] == "node"]
+        gpus = [r for r in rows if r["kind"] == "gpu"]
+        self.assertEqual(len(gpus), 8 * len(nodes))
+        g2 = next(r for r in gpus if r["node"] == "n1" and r["gpu"] == "2")
+        self.assertEqual((g2["job"], g2["user"], g2["idle_held"], g2["util_pct"]), ("881", "lin", "1", "0.0"))
+
+    def test_log_in_live_view(self):
+        import csv, signal, subprocess, sys, tempfile, time
+        from tests.helpers import SCRIPT, env
+        path = tempfile.mktemp(suffix=".csv")
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        p = subprocess.Popen([sys.executable, SCRIPT, "-n", "0.2", "--log", path, "--no-color"],
+                             env=env("full2x8", 150, 40), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        time.sleep(1.2)
+        p.send_signal(signal.SIGTERM)
+        p.communicate(timeout=10)
+        with open(path, newline="", encoding="utf-8") as f:
+            self.assertGreaterEqual(len(list(csv.DictReader(f))), 2 * 17)
+
+
 if __name__ == "__main__":
     unittest.main()

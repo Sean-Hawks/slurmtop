@@ -32,6 +32,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -88,6 +89,11 @@ STRINGS = {
         "w_serving": "slurmtop web dashboard on %s  (Ctrl-C to stop)",
         "w_tunnel": "from your own machine:  ssh -N -L %d:localhost:%d %s   then open the URL",
         "w_exposed": "warning: listening on the network with no login - anyone who can reach this port sees the cluster state",
+        "r_title": "report", "r_samples": "samples", "r_command": "command", "r_avg": "avg",
+        "r_max": "max", "r_busy": "busy", "r_mem": "mem max", "r_temp": "temp max",
+        "r_power": "avg power", "r_energy": "energy", "r_idle": "held idle", "r_node": "node",
+        "r_cluster_avg": "cluster GPU average", "r_energy_total": "GPU energy",
+        "r_progress": "recording ... %d samples", "r_saved": "report written to %s",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -109,6 +115,11 @@ STRINGS = {
         "w_serving": "slurmtop 網頁儀表板：%s（Ctrl-C 停止）",
         "w_tunnel": "在你自己的電腦上：ssh -N -L %d:localhost:%d %s，再打開上面的網址",
         "w_exposed": "注意：正在對網路開放、沒有登入機制，連得到這個埠的人都看得到叢集狀態",
+        "r_title": "效能報告", "r_samples": "次取樣", "r_command": "指令", "r_avg": "平均",
+        "r_max": "最高", "r_busy": "忙碌", "r_mem": "記憶體峰值", "r_temp": "最高溫",
+        "r_power": "平均功耗", "r_energy": "耗電", "r_idle": "佔著閒置", "r_node": "節點",
+        "r_cluster_avg": "叢集 GPU 平均", "r_energy_total": "GPU 總耗電",
+        "r_progress": "記錄中…已取樣 %d 次", "r_saved": "報告存到 %s",
     },
 }
 
@@ -2722,12 +2733,15 @@ def serve_web(nodes, opt):
                 m = model(sample(nodes, opt), opt)
                 m["ui"], m["interval"] = web_strings(), opt.interval
                 text = prometheus(m)
+                if log:
+                    log.write(m)
                 with state["lock"]:
                     state["model"], state["metrics"] = m, text
             except Exception as e:                    # 取樣出錯不能讓伺服器停掉
                 sys.stderr.write("slurmtop: sample failed: %r\n" % (e,))
             time.sleep(max(0.2, opt.interval - (time.monotonic() - t0)))
 
+    log = CsvLog(opt.log) if opt.log else None
     threading.Thread(target=sampler, daemon=True).start()
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
 
@@ -2746,6 +2760,329 @@ def serve_web(nodes, opt):
     httpd.serve_forever()
 
 
+# --- 效能評估：--log（CSV）、--report（摘要，可包一個指令）、--html（報告頁） -------------
+
+LOG_FIELDS = ("time", "node", "kind", "gpu", "vendor", "util_pct", "mem_used_mib",
+              "mem_total_mib", "temp_c", "power_w", "job", "user", "idle_held",
+              "disk_pct", "net_rx_bps", "net_tx_bps")
+
+
+def log_rows(m):
+    """一次取樣 -> CSV 的列：每台一列 kind=node（util 是 CPU%），每張卡一列 kind=gpu。
+    沿用舊資料（stale）的節點不寫，因為那不是新的量測。"""
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(m["time"]))
+    rows = []
+    for n in m["nodes"]:
+        if not n["up"] or n["stale_s"] is not None:
+            continue
+        net = n.get("net") or {}
+        rows.append({"time": ts, "node": n["name"], "kind": "node", "util_pct": n["cpu_pct"],
+                     "mem_used_mib": n["mem_used_mib"], "mem_total_mib": n["mem_total_mib"],
+                     "disk_pct": (n.get("disk") or {}).get("pct"),
+                     "net_rx_bps": net.get("rx"), "net_tx_bps": net.get("tx")})
+        for g in n["gpus"]:
+            rows.append({"time": ts, "node": n["name"], "kind": "gpu", "gpu": g["index"],
+                         "vendor": g["vendor"], "util_pct": g["util"],
+                         "mem_used_mib": g["mem_used_mib"], "mem_total_mib": g["mem_total_mib"],
+                         "temp_c": g["temp_c"], "power_w": g["power_w"], "job": g["job"],
+                         "user": g["user"], "idle_held": int(g["idle_held"])})
+    return rows
+
+
+class CsvLog:
+    """--log FILE：每次取樣附加到 CSV 尾巴；新檔（或空檔）先寫標題列。"""
+
+    def __init__(self, path):
+        import csv
+        new = not os.path.exists(path) or os.path.getsize(path) == 0
+        self.f = open(path, "a", newline="", encoding="utf-8")
+        self.w = csv.DictWriter(self.f, LOG_FIELDS, restval="", extrasaction="ignore")
+        if new:
+            self.w.writeheader()
+
+    def write(self, m):
+        self.w.writerows(log_rows(m))
+        self.f.flush()
+
+    def close(self):
+        self.f.close()
+
+
+def _pctile(vals, q):
+    """nearest-rank 百分位數。"""
+    v = sorted(vals)
+    return v[max(0, min(len(v) - 1, int(math.ceil(q / 100.0 * len(v))) - 1))] if v else None
+
+
+def summarize(samples, command=None, exit_code=None):
+    """一串 model() -> 評估摘要（純資料，給文字、JSON、HTML 共用）。
+
+    能量用梯形法把功耗對時間積分；「佔著卻閒置」算的是被標示成 IDLE 的 GPU 分鐘數。
+    """
+    t0, t1 = samples[0]["time"], samples[-1]["time"]
+    gpus, nodes, cluster = {}, {}, []
+    for m in samples:
+        cluster.append((m["time"], m["summary"]["gpu_util"]))
+        for n in m["nodes"]:
+            if not n["up"] or n["stale_s"] is not None:
+                continue
+            nd = nodes.setdefault(n["name"], {"cpu": [], "mem": [], "mem_total": n["mem_total_mib"]})
+            nd["cpu"].append(n["cpu_pct"])
+            nd["mem"].append(n["mem_used_mib"])
+            for g in n["gpus"]:
+                key = (n["name"], g["index"])
+                d = gpus.setdefault(key, {"t": [], "util": [], "mem": [], "temp": [], "power": [],
+                                          "idle": 0, "jobs": [], "vendor": g["vendor"],
+                                          "model": g.get("model"), "mem_total": g["mem_total_mib"]})
+                d["t"].append(m["time"])
+                d["util"].append(g["util"])
+                d["mem"].append(g["mem_used_mib"])
+                d["temp"].append(g["temp_c"])
+                d["power"].append(g["power_w"])
+                d["idle"] += int(g["idle_held"])
+                if g["job"] and g["job"] not in d["jobs"]:
+                    d["jobs"].append(g["job"])
+    step = (t1 - t0) / (len(samples) - 1) if len(samples) > 1 else 0.0
+    out_g = []
+    energy_total = 0.0
+    for (node, idx), d in sorted(gpus.items(), key=lambda kv: (kv[0][0], _natkey(kv[0][1]))):
+        u = [x for x in d["util"] if x is not None]
+        pw = [(t, p) for t, p in zip(d["t"], d["power"]) if p is not None]
+        wh = sum((b[0] - a[0]) * (a[1] + b[1]) / 2 for a, b in zip(pw, pw[1:])) / 3600.0
+        energy_total += wh
+        known = lambda k: [x for x in d[k] if x is not None]
+        out_g.append({
+            "node": node, "gpu": idx, "vendor": d["vendor"], "model": d["model"],
+            "util_avg": _r(sum(u) / len(u)) if u else None, "util_p95": _pctile(u, 95),
+            "util_max": max(u) if u else None,
+            "busy_pct": _r(100.0 * sum(1 for x in u if x > IDLE_UTIL) / len(u)) if u else None,
+            "mem_max_mib": max(known("mem")) if known("mem") else None,
+            "mem_total_mib": d["mem_total"],
+            "temp_max_c": max(known("temp")) if known("temp") else None,
+            "power_avg_w": _r(sum(p for _, p in pw) / len(pw)) if pw else None,
+            "energy_wh": _r(wh, 2) if pw else None,
+            "idle_held_s": _r(d["idle"] * step, 0),
+            "jobs": d["jobs"], "util_series": d["util"],
+        })
+    out_n = []
+    for name, d in sorted(nodes.items()):
+        out_n.append({"node": name, "cpu_avg": _r(sum(d["cpu"]) / len(d["cpu"])),
+                      "cpu_max": max(d["cpu"]), "mem_max_mib": max(d["mem"]),
+                      "mem_total_mib": d["mem_total"], "cpu_series": d["cpu"]})
+    cu = [u for _, u in cluster if u is not None]
+    return {
+        "cluster": samples[-1]["cluster"], "start": t0, "end": t1, "seconds": _r(t1 - t0, 1),
+        "samples": len(samples), "command": command, "exit_code": exit_code,
+        "gpu_util_avg": _r(sum(cu) / len(cu)) if cu else None,
+        "energy_wh": _r(energy_total, 2) if out_g else None,
+        "gpus": out_g, "nodes": out_n,
+        "cluster_series": [[_r(t - t0, 1), u] for t, u in cluster],
+    }
+
+
+def fmt_secs(sec):
+    """秒數 -> 跟佇列一樣的寫法（45s、2m30s、1h05m）；0 或沒有就是 "-"。"""
+    if not sec:
+        return "-"
+    sec = int(round(sec))
+    return fmt_dur("%d:%02d:%02d" % (sec // 3600, sec // 60 % 60, sec % 60))
+
+
+def _natkey(s):
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", s)]
+
+
+def report_text(r):
+    f = lambda v, fmt: fnum(v, fmt).strip()
+    when = lambda t: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+    out = ["slurmtop %s · %s · %s → %s (%.0f s, %d %s)" % (
+        T("r_title"), r["cluster"], when(r["start"]), when(r["end"])[11:], r["seconds"],
+        r["samples"], T("r_samples"))]
+    if r["command"]:
+        out.append("%s: %s  (exit %s)" % (T("r_command"), " ".join(map(shlex.quote, r["command"])),
+                                            r["exit_code"]))
+    out.append("")
+    if r["gpus"]:
+        head = ("GPU", T("r_avg"), "p95", T("r_max"), T("r_busy"), T("r_mem"), T("r_temp"),
+                T("r_power"), T("r_energy"), T("r_idle"), "JOB")
+        rows = [head] + [(
+            "%s G%s" % (g["node"], g["gpu"]), f(g["util_avg"], "%.0f%%"), f(g["util_p95"], "%.0f%%"),
+            f(g["util_max"], "%.0f%%"), f(g["busy_pct"], "%.0f%%"),
+            f(None if g["mem_max_mib"] is None else g["mem_max_mib"] / 1024, "%.1fG"),
+            f(g["temp_max_c"], "%.0f°C"), f(g["power_avg_w"], "%.0fW"), f(g["energy_wh"], "%.1fWh"),
+            fmt_secs(g["idle_held_s"]),
+            ",".join(g["jobs"]) or "-") for g in r["gpus"]]
+        w = [max(vlen(x[i]) for x in rows) for i in range(len(head))]
+        out += ["  ".join(pad(c, w[i]) if i == 0 or i == len(head) - 1 else rpad(c, w[i])
+                          for i, c in enumerate(x)).rstrip() for x in rows]
+        out.append("")
+    head = (T("r_node"), "CPU " + T("r_avg"), "CPU " + T("r_max"), T("r_mem"))
+    rows = [head] + [(n["node"], f(n["cpu_avg"], "%.0f%%"), f(n["cpu_max"], "%.0f%%"),
+                      "%s / %s" % (fmt_bytes(n["mem_max_mib"] * 1048576),
+                                   fmt_bytes(n["mem_total_mib"] * 1048576))) for n in r["nodes"]]
+    w = [max(vlen(x[i]) for x in rows) for i in range(len(head))]
+    out += ["  ".join(pad(c, w[i]) if i == 0 else rpad(c, w[i]) for i, c in enumerate(x)).rstrip()
+            for x in rows]
+    if r["gpus"]:
+        out += ["", "%s: %s   %s: %s" % (T("r_cluster_avg"), f(r["gpu_util_avg"], "%.1f%%"),
+                                         T("r_energy_total"), f(r["energy_wh"], "%.1f Wh"))]
+    return "\n".join(out)
+
+
+def _svg_series(series, w=640, h=120, color="#56d3f0"):
+    """一條 0-100 的折線（None 斷開），直接產生 SVG 字串，報告頁不需要 JavaScript。"""
+    import html
+    pts = [(i, v) for i, v in enumerate(series)]
+    n = max(1, len(pts) - 1)
+    segs, cur = [], []
+    for i, v in pts:
+        if v is None:
+            if cur:
+                segs.append(cur)
+            cur = []
+            continue
+        cur.append("%.1f,%.1f" % (i * w / n, h - max(0, min(100, v)) / 100.0 * (h - 4) - 2))
+    if cur:
+        segs.append(cur)
+    lines = "".join('<polyline fill="none" stroke="%s" stroke-width="1.5" points="%s"/>'
+                    % (html.escape(color), " ".join(s)) for s in segs if len(s) > 1)
+    grid = "".join('<line x1="0" x2="%d" y1="%.1f" y2="%.1f" stroke="#8884" stroke-dasharray="3 3"/>'
+                   % (w, h - p / 100.0 * (h - 4) - 2, h - p / 100.0 * (h - 4) - 2) for p in (25, 50, 75))
+    return ('<svg viewBox="0 0 %d %d" preserveAspectRatio="none" role="img">%s%s</svg>'
+            % (w, h, grid, lines))
+
+
+def report_html(r):
+    """評估報告存成單一 HTML 檔：圖是伺服端畫好的 SVG，離線、寄信、存檔都能看。"""
+    import html
+    esc = lambda s: html.escape(str(s))
+    palette = ["#56d3f0", "#e67e22", "#2ecc71", "#c792ea", "#f1c40f", "#e74c3c", "#3498db", "#1abc9c"]
+    parts = ["<!doctype html><html><head><meta charset='utf-8'><title>%s</title><style>%s</style>"
+             "</head><body>" % (esc("slurmtop %s · %s" % (T("r_title"), r["cluster"])), REPORT_CSS)]
+    parts.append("<h1>slurmtop %s · %s</h1><p class='muted'>%s → %s · %.0f s · %d %s</p>" % (
+        esc(T("r_title")), esc(r["cluster"]),
+        esc(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["start"]))),
+        esc(time.strftime("%H:%M:%S", time.localtime(r["end"]))), r["seconds"], r["samples"],
+        esc(T("r_samples"))))
+    if r["command"]:
+        parts.append("<p><b>%s</b> <code>%s</code> (exit %s)</p>"
+                     % (esc(T("r_command")), esc(" ".join(map(shlex.quote, r["command"]))),
+                        esc(r["exit_code"])))
+    if r["gpus"]:
+        parts.append("<div class='tiles'><div><span>%s</span><b>%s</b></div><div><span>%s</span><b>%s</b></div></div>"
+                     % (esc(T("r_cluster_avg")), esc(fnum(r["gpu_util_avg"], "%.1f%%").strip()),
+                        esc(T("r_energy_total")), esc(fnum(r["energy_wh"], "%.1f Wh").strip())))
+        parts.append("<h2>%s</h2>%s" % (esc(T("w_history")),
+                                         _svg_series([u for _, u in r["cluster_series"]])))
+        by_node = {}
+        for g in r["gpus"]:
+            by_node.setdefault(g["node"], []).append(g)
+        for node, gs in by_node.items():
+            legend = " ".join("<span style='color:%s'>■ G%s</span>" % (palette[i % 8], esc(g["gpu"]))
+                              for i, g in enumerate(gs))
+            svg = _svg_series([], 640, 120)
+            lines = "".join(_svg_series(g["util_series"], 640, 120, palette[i % 8])
+                            .split(">", 1)[1].rsplit("</svg>", 1)[0] for i, g in enumerate(gs))
+            svg = svg.replace("</svg>", lines + "</svg>")
+            parts.append("<h2>%s · GPU</h2><p>%s</p>%s" % (esc(node), legend, svg))
+        cols = ("GPU", T("r_avg"), "p95", T("r_max"), T("r_busy"), T("r_mem"), T("r_temp"),
+                T("r_power"), T("r_energy"), T("r_idle"), "JOB")
+        parts.append("<h2>GPU</h2><table><tr>%s</tr>" % "".join("<th>%s</th>" % esc(c) for c in cols))
+        for g in r["gpus"]:
+            cells = ["%s G%s" % (g["node"], g["gpu"]), fnum(g["util_avg"], "%.0f%%"),
+                     fnum(g["util_p95"], "%.0f%%"), fnum(g["util_max"], "%.0f%%"),
+                     fnum(g["busy_pct"], "%.0f%%"),
+                     fnum(None if g["mem_max_mib"] is None else g["mem_max_mib"] / 1024, "%.1fG"),
+                     fnum(g["temp_max_c"], "%.0f°C"), fnum(g["power_avg_w"], "%.0fW"),
+                     fnum(g["energy_wh"], "%.1fWh"),
+                     fmt_secs(g["idle_held_s"]),
+                     ",".join(g["jobs"]) or "-"]
+            parts.append("<tr>%s</tr>" % "".join("<td>%s</td>" % esc(c.strip()) for c in cells))
+        parts.append("</table>")
+    parts.append("<h2>%s</h2><table><tr><th>%s</th><th>CPU %s</th><th>CPU %s</th><th>%s</th></tr>"
+                 % tuple(esc(x) for x in (T("r_node"), T("r_node"), T("r_avg"), T("r_max"), T("r_mem"))))
+    for n in r["nodes"]:
+        parts.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s / %s</td></tr>" % (
+            esc(n["node"]), esc(fnum(n["cpu_avg"], "%.0f%%")), esc(fnum(n["cpu_max"], "%.0f%%")),
+            esc(fmt_bytes(n["mem_max_mib"] * 1048576)), esc(fmt_bytes(n["mem_total_mib"] * 1048576))))
+    parts.append("</table><p class='muted'>slurmtop v%s · github.com/Sean-Hawks/slurmtop</p></body></html>"
+                 % esc(__version__))
+    return "".join(parts)
+
+
+REPORT_CSS = """
+body { font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; margin:24px auto;
+  max-width:960px; padding:0 16px; color:#1f2328; background:#fff; }
+@media (prefers-color-scheme: dark) { body { color:#e6edf3; background:#0d1117; } }
+h1 { font-size:20px; } h2 { font-size:15px; margin-top:28px; } .muted { color:#8b949e; }
+svg { width:100%; height:120px; border:1px solid #8884; border-radius:6px; }
+table { border-collapse:collapse; width:100%; } th, td { text-align:right; padding:3px 8px;
+  border-bottom:1px solid #8884; white-space:nowrap; } th:first-child, td:first-child { text-align:left; }
+.tiles { display:flex; gap:16px; } .tiles div { border:1px solid #8884; border-radius:6px; padding:8px 14px; }
+.tiles span { display:block; color:#8b949e; font-size:12px; } .tiles b { font-size:20px; }
+"""
+
+
+def run_report(nodes, opt):
+    """--report：取樣一段時間（或跑完一個指令），最後印出摘要。回傳結束碼。"""
+    command = list(opt.command or [])
+    if command[:1] == ["--"]:                     # 只拿掉開頭那個分隔用的 --，指令自己的參數不動
+        command = command[1:]
+    command = command or None
+    samples, proc, code = [], None, None
+    if command:
+        try:
+            proc = subprocess.Popen(command)
+        except OSError as e:
+            sys.exit("slurmtop: cannot run %s: %s" % (command[0], e))
+    end = time.monotonic() + (opt.report or 0)
+    log = CsvLog(opt.log) if opt.log else None
+    try:
+        while True:
+            t0 = time.monotonic()
+            m = model(sample(nodes, opt), opt)
+            samples.append(m)
+            if log:
+                log.write(m)
+            if sys.stderr.isatty():               # 導向到檔案時不要塞一堆 \r
+                sys.stderr.write("\r" + T("r_progress") % len(samples))
+                sys.stderr.flush()
+            if proc is not None:
+                if proc.poll() is not None:
+                    break
+            elif time.monotonic() >= end:
+                break
+            wait = max(0.0, opt.interval - (time.monotonic() - t0))
+            if proc is not None:
+                try:
+                    proc.wait(timeout=wait)
+                except subprocess.TimeoutExpired:
+                    pass
+            else:
+                time.sleep(min(wait, max(0.0, end - time.monotonic())))
+    except KeyboardInterrupt:                     # Ctrl-C：用已經收集到的資料出報告
+        if proc is not None:
+            proc.terminate()
+    finally:
+        if log:
+            log.close()
+    if sys.stderr.isatty():
+        sys.stderr.write("\n")
+    if proc is not None:
+        code = proc.wait()
+        samples.append(model(sample(nodes, opt), opt))   # 指令結束後再取一筆，時間算到結束
+    r = summarize(samples, command, code)
+    if opt.json:
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+    else:
+        print(out_text(report_text(r)))
+    if opt.html:
+        with open(opt.html, "w", encoding="utf-8") as f:
+            f.write(report_html(r))
+        sys.stderr.write(T("r_saved") % opt.html + "\n")
+    return code or 0
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description="One-screen dashboard for small GPU clusters (Slurm + nvidia-smi).",
@@ -2756,6 +3093,14 @@ def parse_args(argv=None):
     ap.add_argument("--web", nargs="?", const="127.0.0.1:8765", metavar="[ADDR:]PORT",
                     help="serve a live dashboard in the browser, plus /api/state (JSON) and "
                          "/metrics (Prometheus); default 127.0.0.1:8765 - use ssh -L to view it")
+    ap.add_argument("--report", nargs="?", const=0, type=float, metavar="SEC",
+                    help="record for SEC seconds - or while running the command given after "
+                         "--, e.g. slurmtop --report -- python train.py - then print a summary "
+                         "per GPU and node (avg/p95/max, memory, temperature, power, energy)")
+    ap.add_argument("--html", metavar="FILE",
+                    help="with --report: also write a self-contained HTML report with charts")
+    ap.add_argument("--log", metavar="FILE",
+                    help="append every sample to a CSV file (live view, --web or --report)")
     ap.add_argument("--json", action="store_true",
                     help="print one sample as JSON and exit (for scripts and other tools)")
     ap.add_argument("--nodes", help="comma-separated node list (default: discover from Slurm)")
@@ -2801,7 +3146,14 @@ def parse_args(argv=None):
                          "%d%%%% for N samples in a row (default: %d)" % (IDLE_UTIL, IDLE_SAMPLES))
     ap.add_argument("-V", "--version", action="version",
                     version=f"slurmtop {__version__} - credited by {__credits__}")
-    return ap.parse_args(argv)
+    ap.add_argument("command", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+    if args.command and args.report is None:
+        ap.error("unexpected arguments: %s (a command is only run with --report)"
+                 % " ".join(args.command))
+    if args.html and args.report is None:
+        ap.error("--html needs --report")
+    return args
 
 
 def pick_nodes(args):
@@ -2911,6 +3263,8 @@ def main():
         except KeyboardInterrupt:
             pass
         return
+    if args.report is not None:
+        sys.exit(run_report(nodes, args))
     if args.json:                           # 一次取樣、印 JSON 就結束，給腳本和其他工具用
         if args.node_timeout is None:
             args.node_timeout = ONCE_TIMEOUT
@@ -2925,8 +3279,12 @@ def main():
         sys.stdout.write("\033[?1049h\033[?25l")
         if want_splash(args):
             splash(nodes)
+        log = CsvLog(args.log) if args.log else None
         while True:
-            sys.stdout.write("\033[H\033[J" + out_text(render(nodes, args)))
+            sm = sample(nodes, args)
+            if log:
+                log.write(model(sm, args))
+            sys.stdout.write("\033[H\033[J" + out_text(render(nodes, args, sampled=sm)))
             sys.stdout.flush()
             time.sleep(args.interval)
     except KeyboardInterrupt:
