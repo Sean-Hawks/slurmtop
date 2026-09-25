@@ -79,6 +79,12 @@ dashboard holds still — no plumes, sweeps, blinking or QR panel — see
 *The whole panel is tinted by node load: n1 pegged and hot, n2 middling, idle
 nodes stay dark.*
 
+**Terminal, browser, Grafana or a report file** — the same single script gives
+you a live terminal dashboard, a live dashboard in any browser (`--web`), a
+Prometheus endpoint, JSON for scripts, and recorded performance reports with
+charts (`--report`), on Linux, macOS, FreeBSD and Windows, with NVIDIA, AMD,
+Apple Silicon and Jetson GPUs.
+
 ## Why
 
 `nvtop` is great but shows one machine. `squeue` tells you what is queued but
@@ -110,13 +116,19 @@ curl -fsSLo /usr/local/bin/slurmtop \
 chmod +x /usr/local/bin/slurmtop
 ```
 
+On Windows (PowerShell), or just run `py slurmtop` from wherever you saved it:
+
+```powershell
+irm https://raw.githubusercontent.com/Sean-Hawks/slurmtop/main/install.ps1 | iex
+```
+
 Only the machine you run it from needs the script — it reads the other nodes
 over SSH. Installing it on every node is optional but handy.
 
 Requirements:
 
 - Python 3.8+ on the machine you run it from
-- Linux or macOS on each node
+- a POSIX `sh` on each remote node (bash is used when present, not required)
 - passwordless SSH from that machine to every remote node
 
 Everything else is optional and degrades cleanly:
@@ -127,10 +139,23 @@ Everything else is optional and degrades cleanly:
 | Slurm | pass `--nodes` or `--ssh-config`; the queue panel just says there are no jobs |
 | a second machine | `slurmtop --nodes localhost` watches the box you are on, no SSH involved |
 
-CPU and memory are read from `/proc` on Linux and from `sysctl` / `vm_stat` /
-`top` on macOS, so a laptop works as a node like anything else. Only NVIDIA
-GPUs are read; AMD and Intel are not supported yet — the coupling is one
-`nvidia-smi` call in `REMOTE`, so a patch adding `rocm-smi` would be small.
+### Where it runs
+
+| Machine | CPU / memory / disk / network | GPUs |
+|---|---|---|
+| Linux | `/proc`, `free`, `df`, `/proc/net/dev` | NVIDIA via `nvidia-smi`; AMD via amdgpu sysfs (no `rocm-smi` needed); NVIDIA Jetson via sysfs |
+| macOS | `top`, `vm_stat`, `sysctl`, `df` (data volume), `netstat` | Apple Silicon and Intel-Mac GPUs via `ioreg` (utilisation and memory; temperature/power need `sudo powermetrics`, so they show `-`) |
+| FreeBSD | `kern.cp_time`, `vm.stats`, `df`, `netstat` | NVIDIA via `nvidia-smi` if installed |
+| Windows (the machine you run it on) | Win32 API through `ctypes`, `netstat -e` | NVIDIA via `nvidia-smi.exe` |
+| Windows → remote Linux nodes | over the built-in OpenSSH client | as for Linux |
+
+Nodes are read with a small POSIX shell script, so any login shell works
+(bash, dash, zsh, csh, fish), and nothing is installed on them. Intel GPUs are
+not read yet (their Linux drivers do not expose utilisation without root).
+
+If the terminal cannot show Unicode block characters (a Windows console
+redirected to a file, `LANG=C` on an old system) the whole screen falls back
+to plain ASCII instead of failing; `--ascii` forces the ASCII bars.
 
 ## Usage
 
@@ -157,6 +182,13 @@ slurmtop --qr-wide          # double-width QR modules, for fonts with gappy bloc
 slurmtop --ascii            # ASCII bars, for fonts without block glyphs
 slurmtop --lang zh          # 繁體中文介面（預設依 $LANG 自動判斷）
 slurmtop --title "lab-gpu"  # header title (default: Slurm ClusterName)
+
+slurmtop --web              # live dashboard in the browser on 127.0.0.1:8765
+slurmtop --web 0.0.0.0:8080 # ... on every interface (no login - see below)
+slurmtop --json             # one sample as JSON, for scripts
+slurmtop --report 300       # record 5 minutes, then print a summary
+slurmtop --report --html run.html -- python train.py   # evaluate one command
+slurmtop --log usage.csv    # append every sample to a CSV (any mode)
 ```
 
 Run it on any node in the cluster. The node you are on is read locally; the
@@ -262,15 +294,84 @@ The live view runs in the terminal's alternate screen buffer, so quitting
 restores whatever was on screen before and leaves no stack of stale frames in
 your scrollback.
 
+## In the browser
+
+```bash
+slurmtop --web                       # on the login node
+ssh -N -L 8765:localhost:8765 login  # on your laptop, then open http://localhost:8765
+```
+
+The dashboard shows cluster totals, the alert list, a cluster utilisation
+chart, one card per node (CPU, memory, disk and network, and for every GPU its
+utilisation bar and history, memory, temperature, power, owner and `IDLE`
+badge) and the queue. It follows the browser's light/dark setting and works
+on a phone. The page, styles and script are embedded in `slurmtop`, so it
+works on clusters with no internet access.
+
+It listens on `127.0.0.1` by default and has **no login**: anyone who can
+reach the port sees node names, job names and users. Use an SSH tunnel as
+above, or put it behind a reverse proxy that does authentication. Job names
+are shown as text only, the page sends a strict Content-Security-Policy, and
+on localhost requests with a foreign `Host` header are refused.
+
+To keep it running, a systemd user unit is enough:
+
+```ini
+# ~/.config/systemd/user/slurmtop.service
+[Service]
+ExecStart=/usr/local/bin/slurmtop --web 127.0.0.1:8765 -n 5
+Restart=on-failure
+[Install]
+WantedBy=default.target
+```
+
+## Grafana, scripts and other tools
+
+`--web` also serves `/metrics` in the Prometheus text format (node up/stale,
+CPU, memory, disk, network, per-GPU utilisation, memory, temperature, power,
+held-but-idle, owner info, and jobs by state) and `/api/state` as JSON:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: slurmtop
+    static_configs: [{targets: ["login-node:8765"]}]
+```
+
+`slurmtop --json` prints the same JSON once and exits. Units are raw (MiB,
+W, °C, bytes, bytes/s) and values that could not be read are `null`.
+
+## Performance reports
+
+`--report` records samples and prints a summary per GPU (average, p95 and peak
+utilisation, share of samples busy, peak memory and temperature, average power,
+energy, time held but idle, jobs seen) and per node (average and peak CPU, peak
+memory):
+
+```bash
+slurmtop --report 600 --nodes gpu01          # ten minutes on one node
+slurmtop --report -- python train.py          # exactly as long as the command runs
+slurmtop --report 600 --json > run.json       # the summary as JSON
+slurmtop --report 600 --html run.html         # plus a shareable HTML page with charts
+```
+
+With a command, slurmtop exits with that command's exit code, so it fits
+into a batch script. The HTML report is a single file with the charts drawn as
+SVG and no JavaScript. `--log FILE.csv` keeps every raw sample (one row per
+node and per GPU) and works in any mode, including the live view and `--web`.
+
 ## Notes
 
-- Reads only `nvidia-smi`, `/proc/stat`, `/proc/loadavg`, `/proc/net/dev`,
-  `/proc/<pid>/cgroup`, `free`, `df`, `squeue`, `sinfo` and `scontrol` (plus
-  `top`, `sysctl`, `vm_stat` and `netstat` on macOS). Nothing is written
-  anywhere and no daemon is installed.
+- Only reads: `nvidia-smi`, `/proc`, `/sys` (amdgpu, Jetson, network
+  interfaces), `free`, `df`, `squeue`, `sinfo` and `scontrol`, plus `top`,
+  `sysctl`, `vm_stat`, `netstat` and `ioreg` on macOS/FreeBSD. Nothing is
+  written on the nodes and no daemon is installed; `--log` and `--html` write
+  only the file you name.
+- Text that other users control (job names, user names, process names) is
+  stripped of control characters before it reaches your terminal.
 - Sparkline history lives in the process, so it starts empty on each launch.
-- AMD/Intel GPUs are not supported (patches welcome — the only coupling is the
-  `nvidia-smi --query-gpu` call in `REMOTE`).
+- Intel GPUs are not read yet (patches welcome — each GPU family is one
+  section in `REMOTE` plus a small parser).
 
 ## Scan it
 

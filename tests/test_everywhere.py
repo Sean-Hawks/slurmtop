@@ -670,5 +670,24 @@ class Report(unittest.TestCase):
             self.assertGreaterEqual(len(list(csv.DictReader(f))), 2 * 17)
 
 
+class Docs(unittest.TestCase):
+    def test_readme_flags_exist(self):
+        """README 提到的每個 --參數 都要真的存在，文件和程式不能對不起來。"""
+        from tests.helpers import ROOT, SCRIPT
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+            readme = f.read()
+        with open(SCRIPT, encoding="utf-8") as f:
+            src = f.read()
+        known = set(re.findall(r'add_argument\((?:"-\w", )?"(--[a-z-]+)"', src))
+        used = set(re.findall(r"(?<![\w-])(--[a-z][a-z-]+)", readme))
+        self.assertEqual(sorted(used - known - {"--help"}), [])
+
+    def test_installers_point_at_the_script(self):
+        from tests.helpers import ROOT
+        for name in ("install.sh", "install.ps1"):
+            with open(os.path.join(ROOT, name), encoding="utf-8") as f:
+                self.assertIn("Sean-Hawks/slurmtop/main/slurmtop", f.read(), name)
+
+
 if __name__ == "__main__":
     unittest.main()
