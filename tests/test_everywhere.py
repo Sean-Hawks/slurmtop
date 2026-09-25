@@ -771,5 +771,34 @@ class ReportRobustness(unittest.TestCase):
         self.assertEqual(r["gpus"][0]["energy_wh"], round((100 * 10 * 3) / 3600, 2))
 
 
+class WebErrors(unittest.TestCase):
+    """--web 的位址不對、埠被佔、紀錄檔開不了：一行錯誤訊息，不是 traceback。"""
+
+    def check(self, *args):
+        p = run("idle2x8", *args, timeout=20)
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertNotIn("Traceback", p.stderr)
+        self.assertIn("slurmtop: cannot serve on", p.stderr)
+        return p.stderr
+
+    def test_bad_address(self):
+        self.check("--web", "abc")
+
+    def test_port_in_use(self):
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        self.addCleanup(s.close)
+        self.check("--web", "127.0.0.1:%d" % s.getsockname()[1])
+
+    def test_bad_log_path(self):
+        self.assertIn("/nonexistent/x.csv", self.check("--web", "127.0.0.1:0", "--log", "/nonexistent/x.csv"))
+
+    def test_idle_connections_time_out(self):
+        m = load()
+        self.assertEqual(m.web_handler({}, "127.0.0.1").timeout, 30)
+
+
 if __name__ == "__main__":
     unittest.main()

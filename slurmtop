@@ -2670,6 +2670,7 @@ def web_handler(state, bind):
 
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "slurmtop/" + __version__
+        timeout = 30                             # 閒置的連線不要永遠佔著一條執行緒
 
         def log_message(self, *a):               # 不要每個請求都印一行
             pass
@@ -2733,8 +2734,25 @@ def web_handler(state, bind):
 def serve_web(nodes, opt):
     """--web：背景一條執行緒照 -n 的間隔取樣，HTTP 伺服器只讀最新的一份。"""
     import http.server
-    host, port = parse_listen(opt.web)
     state = {"lock": threading.Lock(), "model": None, "metrics": None}
+
+    class Server(http.server.ThreadingHTTPServer):
+        daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            # 瀏覽器中途關掉連線（BrokenPipe、ConnectionReset）很常見，不要每次都印一整串
+            err = sys.exc_info()[1]
+            if not isinstance(err, (ConnectionError, socket.timeout)):
+                sys.stderr.write("slurmtop: request from %s failed: %r\n" % (client_address[0], err))
+
+    # 先確定位址對、埠綁得到、紀錄檔開得了，再開始取樣；失敗就一行說清楚，不要吐 traceback
+    try:
+        host, port = parse_listen(opt.web)
+        Server.address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        httpd = Server((host, port), web_handler(state, host))
+        log = CsvLog(opt.log) if opt.log else None
+    except (ValueError, OSError) as e:
+        sys.exit("slurmtop: cannot serve on %s: %s" % (opt.web, e))
 
     def sampler():
         while True:
@@ -2751,15 +2769,7 @@ def serve_web(nodes, opt):
                 sys.stderr.write("slurmtop: sample failed: %r\n" % (e,))
             time.sleep(max(0.2, opt.interval - (time.monotonic() - t0)))
 
-    log = CsvLog(opt.log) if opt.log else None
     threading.Thread(target=sampler, daemon=True).start()
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
-
-    class Server(http.server.ThreadingHTTPServer):
-        address_family = family
-        daemon_threads = True
-
-    httpd = Server((host, port), web_handler(state, host))
     port = httpd.server_address[1]
     shown = "[%s]" % host if ":" in host else host
     print(T("w_serving") % ("http://%s:%d/" % (shown, port)), flush=True)
