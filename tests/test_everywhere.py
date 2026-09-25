@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import unittest
 from unittest import mock
 
@@ -430,6 +431,114 @@ class PlainAscii(unittest.TestCase):
 
     def test_utf8_untouched(self):
         self.assertIn("╭", run("full2x8", "--no-color").stdout)
+
+
+class WebDashboard(unittest.TestCase):
+    """--web：真的起一個伺服器（埠號 0 = 讓系統挑），用 urllib 打每個端點。"""
+
+    def start(self, scenario, *args):
+        import subprocess, sys, re as _re
+        from tests.helpers import SCRIPT, env
+        e = env(scenario, 150, 40)
+        p = subprocess.Popen([sys.executable, SCRIPT, "--web", "127.0.0.1:0", "-n", "0.5", *args],
+                             env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (p.kill(), p.wait(), p.stdout.close(), p.stderr.close()))
+        line = p.stdout.readline()
+        m = _re.search(r"(http://127\.0\.0\.1:\d+/)", line)
+        self.assertTrue(m, line + p.stderr.read() if p.poll() is not None else line)
+        return m.group(1)
+
+    def get(self, url, host=None):
+        import urllib.request, urllib.error
+        req = urllib.request.Request(url, headers={"Host": host} if host else {})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, dict(r.headers), r.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read().decode("utf-8")
+
+    def wait_state(self, base):
+        import time
+        for _ in range(100):
+            code, _, body = self.get(base + "api/state")
+            if code == 200:
+                return json.loads(body)
+            time.sleep(0.1)
+        self.fail("no sample")
+
+    def test_endpoints(self):
+        base = self.start("idleheld", "--idle-samples", "1")
+        d = self.wait_state(base)
+        self.assertEqual(d["summary"]["gpus"], 16)
+        self.assertEqual(d["interval"], 0.5)
+        self.assertEqual(d["ui"]["w_util"], "GPU utilisation")
+        code, h, page = self.get(base)
+        self.assertEqual(code, 200)
+        self.assertIn('src="app.js"', page)
+        self.assertIn("default-src 'self'", h["Content-Security-Policy"])
+        self.assertEqual(h["X-Content-Type-Options"], "nosniff")
+        self.assertNotIn("<script>", page)                    # 沒有內嵌腳本，CSP 才擋得住注入
+        code, h, js = self.get(base + "app.js")
+        self.assertEqual((code, h["Content-Type"].split(";")[0]), (200, "text/javascript"))
+        # 叢集來的字串一律 textContent；不能用任何會解析 HTML 的寫法
+        self.assertIsNone(re.search(r"\.innerHTML|outerHTML|insertAdjacentHTML|document\.write", js))
+        self.assertEqual(self.get(base + "app.css")[0], 200)
+        self.assertEqual(self.get(base + "healthz")[2], "ok\n")
+        self.assertEqual(self.get(base + "nope")[0], 404)
+        code, _, metrics = self.get(base + "metrics")
+        self.assertEqual(code, 200)
+        self.assertIn('slurmtop_gpu_utilization_percent{node="n1",gpu="0",vendor="nvidia"} 91.0', metrics)
+        self.assertIn('slurmtop_gpu_idle_held{node="n1",gpu="2",vendor="nvidia"} 1', metrics)
+        self.assertIn('slurmtop_gpu_owner_info{node="n2",gpu="4",vendor="nvidia",job="1006_3",user="wu"} 1',
+                      metrics)
+        self.assertIn('slurmtop_jobs{state="R"} 4', metrics)
+
+    def test_dns_rebinding_blocked(self):
+        base = self.start("idle2x8")
+        self.assertEqual(self.get(base + "api/state", host="evil.example:80")[0], 403)
+        self.assertEqual(self.get(base + "api/state", host="attacker.localhost.evil")[0], 403)
+        for ok in ("localhost:8765", "127.0.0.1", "[::1]:8765"):
+            self.assertIn(self.get(base + "healthz", host=ok)[0], (200,), ok)
+
+    def test_loading_before_first_sample(self):
+        base = self.start("hang", "--node-timeout", "3")       # 第一次取樣要等 3 秒
+        code, _, body = self.get(base + "api/state")
+        self.assertEqual(code, 503)
+        self.assertIn("first sample", json.loads(body)["message"])
+        self.assertEqual(self.get(base + "metrics")[0], 503)
+
+    def test_prometheus_escaping_and_nulls(self):
+        m = load()
+        text = m.prometheus({"nodes": [
+            {"name": 'we"ird\\node\nx', "up": True, "stale_s": None, "cpu_pct": None, "load": [1, 2, 3],
+             "mem_used_mib": 1, "mem_total_mib": 2, "disk": None, "net": None, "gpus": []},
+            {"name": "down", "up": False, "stale_s": None}], "queue": []})
+        self.assertIn('slurmtop_node_up{node="we\\"ird\\\\node\\nx"} 1', text)
+        self.assertIn('slurmtop_node_up{node="down"} 0', text)
+        self.assertNotIn("cpu_utilization_percent{", text)       # 讀不到的值不輸出
+        for ln in text.splitlines():
+            self.assertTrue(ln.startswith("#") or ln.startswith("slurmtop_"), ln)
+
+    def test_parse_listen(self):
+        m = load()
+        self.assertEqual(m.parse_listen("8765"), ("127.0.0.1", 8765))
+        self.assertEqual(m.parse_listen("0.0.0.0:9000"), ("0.0.0.0", 9000))
+        self.assertEqual(m.parse_listen("[::1]:80"), ("::1", 80))
+        for bad in ("", "abc", "1.2.3.4:", "::1:80"):
+            with self.assertRaises(ValueError):
+                m.parse_listen(bad)
+
+    def test_js_syntax(self):
+        import shutil, subprocess, tempfile
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        fd, path = tempfile.mkstemp(suffix=".js")
+        with os.fdopen(fd, "w") as f:
+            f.write(load().WEB_JS)
+        self.addCleanup(os.remove, path)
+        p = subprocess.run([node, "--check", path], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
 
 
 if __name__ == "__main__":

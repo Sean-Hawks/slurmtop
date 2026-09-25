@@ -81,6 +81,13 @@ STRINGS = {
         "idle_tag": "IDLE", "idle_alert": "held but idle", "none_mine": "no GPUs in use by %s",
         "alert_down": "unreachable", "alert_hot": "hot %.0f°C", "alert_disk": "disk %.0f%%",
         "alert_more": "+%d more", "nodes": "NODES",
+        "w_util": "GPU utilisation", "w_power": "Power", "w_vram": "GPU memory",
+        "w_hot": "Hottest GPU", "w_cpu": "CPU", "w_mem": "Memory", "w_disk": "Disk",
+        "w_net": "Net", "w_history": "Cluster GPU utilisation", "w_busy": "busy", "w_nodes": "nodes up",
+        "w_loading": "waiting for the first sample",
+        "w_serving": "slurmtop web dashboard on %s  (Ctrl-C to stop)",
+        "w_tunnel": "from your own machine:  ssh -N -L %d:localhost:%d %s   then open the URL",
+        "w_exposed": "warning: listening on the network with no login - anyone who can reach this port sees the cluster state",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -95,6 +102,13 @@ STRINGS = {
         "idle_tag": "閒置", "idle_alert": "佔著卻閒置", "none_mine": "%s 目前沒有佔用任何 GPU",
         "alert_down": "斷線", "alert_hot": "過熱 %.0f°C", "alert_disk": "磁碟 %.0f%%",
         "alert_more": "還有 %d 項", "nodes": "節點",
+        "w_util": "GPU 使用率", "w_power": "功耗", "w_vram": "GPU 記憶體",
+        "w_hot": "最高溫", "w_cpu": "CPU", "w_mem": "記憶體", "w_disk": "磁碟",
+        "w_net": "網路", "w_history": "叢集 GPU 使用率", "w_busy": "忙碌", "w_nodes": "台在線",
+        "w_loading": "等待第一次取樣",
+        "w_serving": "slurmtop 網頁儀表板：%s（Ctrl-C 停止）",
+        "w_tunnel": "在你自己的電腦上：ssh -N -L %d:localhost:%d %s，再打開上面的網址",
+        "w_exposed": "注意：正在對網路開放、沒有登入機制，連得到這個埠的人都看得到叢集狀態",
     },
 }
 
@@ -2142,6 +2156,8 @@ def model(sm, opt=None):
     for f in queue:
         j = dict(zip(keys, f))
         j["gpus"] = gpu_count(j.get("gres"))
+        for k in ("elapsed", "left", "limit"):      # 秒數，方便其他工具計算
+            j[k + "_s"] = dur_sec(j.get(k))
         jobs.append(j)
     return {
         "version": __version__, "time": sm["time"], "cluster": _title, "summary": summary,
@@ -2337,6 +2353,389 @@ def cluster_name():
     return "cluster"
 
 
+# --- 網頁儀表板（--web）與 Prometheus（/metrics） ----------------------------------
+# 只用標準函式庫的 http.server。頁面、CSS、JS 都內嵌在這個檔案裡，不連任何 CDN，
+# 叢集的登入節點不能上網也能用。預設只聽 127.0.0.1，用 ssh -L 轉過來看。
+
+WEB_HTML = """<!doctype html>
+<html lang="{lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slurmtop</title><link rel="stylesheet" href="app.css"></head>
+<body>
+<header><div class="brand">SLURMTOP <span id="cluster"></span></div>
+<div id="status"></div><div id="clock"></div></header>
+<main>
+<section id="tiles" class="tiles"></section>
+<section id="alerts"></section>
+<section class="card"><h2 id="h-history"></h2><div id="history"></div></section>
+<section id="nodes" class="nodes"></section>
+<section class="card"><h2 id="h-queue"></h2><div id="queue"></div></section>
+</main>
+<footer>slurmtop v{version} · <a href="https://github.com/Sean-Hawks/slurmtop">github.com/Sean-Hawks/slurmtop</a>
+· <a href="api/state">JSON</a> · <a href="metrics">Prometheus</a></footer>
+<script src="app.js"></script>
+</body></html>
+"""
+
+WEB_CSS = """
+:root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3; --dim:#8b949e;
+  --accent:#56d3f0; --warn:#f1c40f; --red:#e74c3c; --ok:#2ecc71; }
+@media (prefers-color-scheme: light) { :root { --bg:#f6f8fa; --panel:#ffffff; --line:#d0d7de;
+  --text:#1f2328; --dim:#656d76; --accent:#0969da; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text);
+  font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,"Noto Sans Mono CJK TC",monospace; }
+header { display:flex; gap:16px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); }
+.brand { font-weight:700; color:var(--accent); letter-spacing:.08em; }
+.brand span { color:var(--text); margin-left:8px; letter-spacing:0; }
+#status { flex:1; color:var(--dim); } #status.bad { color:var(--red); }
+#clock { color:var(--dim); }
+main { padding:12px 16px; display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
+#queue { overflow-x:auto; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.card h2, .node h3 { margin:0 0 8px; font-size:13px; color:var(--dim); font-weight:600; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+.tile { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.tile .k { color:var(--dim); font-size:12px; }
+.tile .v { font-size:20px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#alerts:empty { display:none; }
+.alert { padding:6px 10px; border-radius:6px; margin:0 0 6px; border-left:4px solid var(--warn);
+  background:color-mix(in srgb, var(--warn) 12%, var(--panel)); }
+.alert.red { border-color:var(--red); background:color-mix(in srgb, var(--red) 14%, var(--panel)); }
+.nodes { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr)); gap:12px; }
+.node h3 { display:flex; gap:8px; color:var(--text); font-size:14px; }
+.node h3 .sub { color:var(--dim); font-weight:400; margin-left:auto; }
+.stale { color:var(--warn); } .down { color:var(--red); }
+.row { display:grid; grid-template-columns:60px 1fr 56px; gap:8px; align-items:center; margin:3px 0; }
+.row .lab { color:var(--dim); } .row .num { text-align:right; }
+.bar { height:10px; background:var(--line); border-radius:5px; overflow:hidden; }
+.bar > i { display:block; height:100%; border-radius:5px; }
+.gpu { display:grid; grid-template-columns:28px 90px 42px 56px 96px minmax(0,1fr);
+  gap:8px; align-items:center; padding:3px 0; border-top:1px dashed var(--line); }
+.gpu > span { white-space:nowrap; } .gpu > div { min-width:0; }
+.gpu .own { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.badge { color:#000; background:var(--warn); border-radius:4px; padding:0 4px; font-weight:700; margin-right:4px; }
+table { width:100%; border-collapse:collapse; } th { text-align:left; color:var(--dim); font-weight:600; }
+td, th { padding:3px 8px 3px 0; border-bottom:1px solid var(--line); white-space:nowrap; }
+.muted { color:var(--dim); } svg { display:block; width:100%; }
+footer { color:var(--dim); padding:8px 16px 16px; font-size:12px; } a { color:var(--accent); }
+/* 放最後：要蓋過上面同樣權重的規則 */
+@media (max-width: 520px) {        /* 手機：留使用率和誰佔著（含 IDLE），記憶體和溫度功耗先藏起來 */
+  .gpu { grid-template-columns:26px 70px 40px minmax(0,1fr); }
+  .gpu > :nth-child(4), .gpu > :nth-child(5) { display:none; }
+  main { padding:8px; } header { padding:8px; gap:8px; } .tile .v { font-size:18px; } }
+"""
+
+WEB_JS = r"""
+"use strict";
+// 所有來自叢集的字串（job 名稱、使用者）都用 textContent 放進頁面，不經過 innerHTML
+const $ = (s) => document.querySelector(s);
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k === "style") e.style.cssText = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k !== null && k !== undefined) e.append(k instanceof Node ? k : String(k));
+  return e;
+}
+function heat(p) {                       // 跟終端機一樣：0% 綠 → 60% 黃 → 100% 紅
+  p = Math.max(0, Math.min(100, p || 0));
+  const mix = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
+  const c = p <= 60 ? mix([46, 204, 113], [241, 196, 15], p / 60) : mix([241, 196, 15], [231, 76, 60], (p - 60) / 40);
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+const dash = (v, f) => (v === null || v === undefined) ? "-" : f(v);
+const pct = (v) => dash(v, (x) => x.toFixed(0) + "%");
+function bytes(n, unit) {
+  if (n === null || n === undefined) return "-";
+  const u = ["", "K", "M", "G", "T", "P"]; let i = 0;
+  while (Math.abs(n) >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)) + u[i] + (unit || "");
+}
+function bar(p) { return el("div", {class: "bar"}, el("i", {style: `width:${Math.max(0, Math.min(100, p || 0))}%;background:${heat(p)}`})); }
+function spark(vals, w, h, fill) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`); svg.setAttribute("preserveAspectRatio", "none");
+  svg.style.height = h + "px";
+  const v = (vals || []).filter((x) => x !== null);
+  if (v.length < 2) return svg;
+  const step = w / (v.length - 1);
+  const pts = v.map((x, i) => `${(i * step).toFixed(1)},${(h - Math.max(0, Math.min(100, x)) / 100 * (h - 2) - 1).toFixed(1)}`);
+  const last = v[v.length - 1];
+  if (fill) {
+    const area = document.createElementNS(NS, "polygon");
+    area.setAttribute("points", `0,${h} ${pts.join(" ")} ${w},${h}`);
+    area.setAttribute("fill", heat(last)); area.setAttribute("fill-opacity", "0.18");
+    svg.append(area);
+  }
+  const line = document.createElementNS(NS, "polyline");
+  line.setAttribute("points", pts.join(" ")); line.setAttribute("fill", "none");
+  line.setAttribute("stroke", heat(last)); line.setAttribute("stroke-width", "1.5");
+  line.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.append(line);
+  return svg;
+}
+function tile(k, v, sub) { return el("div", {class: "tile"}, el("div", {class: "k"}, k), el("div", {class: "v"}, v), sub ? el("div", {class: "k"}, sub) : null); }
+function rowBar(lab, p, num) { return el("div", {class: "row"}, el("span", {class: "lab"}, lab), bar(p), el("span", {class: "num"}, num)); }
+
+function render(d) {
+  const t = d.ui, s = d.summary;
+  document.title = `${d.cluster} · slurmtop`;
+  $("#cluster").textContent = d.cluster;
+  $("#clock").textContent = new Date(d.time * 1000).toLocaleTimeString();
+  $("#h-history").textContent = t.w_history;
+  $("#h-queue").textContent = t.queue;
+  const tiles = s.gpus ? [
+    tile(t.w_util, pct(s.gpu_util), `${s.gpus_busy}/${s.gpus} ${t.w_busy}`),
+    tile(t.w_power, dash(s.power_w, (w) => (w / 1000).toFixed(2) + " kW")),
+    tile(t.w_vram, bytes(s.vram_used_mib * 1048576), `/ ${bytes(s.vram_total_mib * 1048576)}`),
+    tile(t.w_hot, dash(s.gpu_temp_max, (x) => x.toFixed(0) + "°C")),
+  ] : [];
+  tiles.push(tile(t.w_cpu, pct(s.cpu_pct), `${s.nodes_up}/${s.nodes} ${t.w_nodes}`),
+             tile(t.w_mem, bytes(s.mem_used_mib * 1048576), `/ ${bytes(s.mem_total_mib * 1048576)}`));
+  $("#tiles").replaceChildren(...tiles);
+  $("#alerts").replaceChildren(...d.alerts.map((a) => el("div", {class: "alert " + a.level}, "⚠ " + a.text)));
+  $("#history").replaceChildren(spark(d.history, 600, 90, true));
+  $("#nodes").replaceChildren(...d.nodes.map((n) => nodeCard(n, t)));
+  $("#queue").replaceChildren(queueTable(d.queue, t, d.queue_stale_s));
+}
+
+function nodeCard(n, t) {
+  const head = el("h3", {}, n.name,
+    n.stale_s !== null ? el("span", {class: "stale"}, t.stale.replace("%d", n.stale_s)) : null,
+    !n.up ? el("span", {class: "down"}, t.unreachable) : null,
+    n.up ? el("span", {class: "sub"}, n.gpus.length ? `${n.gpus.filter((g) => (g.util || 0) > 5).length}/${n.gpus.length} ${t.w_busy}` : t.no_gpu) : null);
+  const card = el("div", {class: "card node"}, head);
+  if (!n.up) return card;
+  const memp = n.mem_total_mib ? 100 * n.mem_used_mib / n.mem_total_mib : 0;
+  card.append(rowBar("CPU", n.cpu_pct, pct(n.cpu_pct)), spark(n.history.cpu, 300, 24, false),
+              rowBar(t.w_mem, memp, pct(memp)));
+  if (n.disk) card.append(rowBar(t.w_disk, n.disk.pct, pct(n.disk.pct)));
+  card.append(el("div", {class: "row"}, el("span", {class: "lab"}, t.w_net),
+    el("span", {class: "muted"}, n.net ? `↓ ${bytes(n.net.rx, "/s")}   ↑ ${bytes(n.net.tx, "/s")}` : "-"), el("span")));
+  for (const g of n.gpus) {
+    const own = el("span", {class: "own"}, g.idle_held ? el("span", {class: "badge"}, t.idle_tag) : null,
+      g.job ? `${g.job} ${g.user || ""}` : (g.user ? `(${g.user})` : (g.model || "")));
+    card.append(el("div", {class: "gpu"}, el("b", {}, "G" + g.index), el("div", {}, bar(g.util), spark(g.history, 200, 16, false)),
+      el("span", {class: "num"}, pct(g.util)),
+      el("span", {class: "muted"}, `${bytes(g.mem_used_mib === null ? null : g.mem_used_mib * 1048576)}`),
+      el("span", {style: g.temp_c !== null ? `color:${heat((g.temp_c - 35) * 2)}` : ""}, dash(g.temp_c, (x) => x.toFixed(0) + "°C") + " " + dash(g.power_w, (x) => x.toFixed(0) + "W")),
+      own));
+  }
+  return card;
+}
+
+function dur(sec) {                     // 跟終端機的 fmt_dur 一樣：2h45m、20m00s、3d02h
+  if (sec === null || sec === undefined) return "-";
+  const d = Math.floor(sec / 86400), h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
+  const p2 = (x) => String(x).padStart(2, "0");
+  if (h >= 24) return `${d}d${p2(h % 24)}h`;
+  if (h) return `${h}h${p2(m)}m`;
+  if (m) return `${m}m${p2(s)}s`;
+  return `${s}s`;
+}
+function queueTable(q, t, staleS) {
+  if (!q.length) return el("div", {class: "muted"}, t.no_jobs);
+  const state = (j) => j.state === "R" ? el("span", {style: "color:var(--ok)"}, "● " + t.run)
+    : j.state === "PD" ? el("span", {style: "color:var(--warn)"}, "◌ " + t.pend) : j.state;
+  const cols = [[t.job, (j) => j.id], [t.name, (j) => j.name], [t.user, (j) => j.user], [t.state, state],
+                [t.used, (j) => dur(j.elapsed_s)], [t.left, (j) => dur(j.left_s)],
+                [t.gpu, (j) => j.gpus === null ? "-" : j.gpus], [t.where, (j) => j.where]];
+  const head = el("tr", {}, ...cols.map(([h]) => el("th", {}, h)));
+  const rows = q.map((j) => el("tr", {}, ...cols.map(([, f]) => { const v = f(j); return el("td", {}, v === null || v === undefined ? "-" : v); })));
+  const tbl = el("table", {}, el("thead", {}, head), el("tbody", {}, ...rows));
+  return staleS !== null ? el("div", {}, el("div", {class: "stale"}, t.stale.replace("%d", staleS)), tbl) : tbl;
+}
+
+let interval = 2;
+async function tick() {
+  const st = $("#status");
+  try {
+    const r = await fetch("api/state", {cache: "no-store"});
+    const d = await r.json();
+    if (r.ok) { interval = d.interval || interval; render(d); st.textContent = ""; st.className = ""; }
+    else { st.textContent = d.message || "…"; }
+  } catch (e) {
+    st.textContent = "⚠ offline"; st.className = "bad";
+  }
+  setTimeout(tick, interval * 1000);
+}
+tick();
+"""
+
+
+def _prom_label(v):
+    return str(v).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def prometheus(m):
+    """model() -> Prometheus 文字格式，給 Grafana 之類的工具抓。"""
+    lines = []
+
+    def metric(name, help_, rows, kind="gauge"):
+        lines.append("# HELP slurmtop_%s %s" % (name, help_))
+        lines.append("# TYPE slurmtop_%s %s" % (name, kind))
+        for labels, v in rows:
+            if v is None:
+                continue
+            lab = ",".join('%s="%s"' % (k, _prom_label(x)) for k, x in labels.items())
+            lines.append("slurmtop_%s{%s} %s" % (name, lab, repr(float(v)) if isinstance(v, float) else v))
+
+    ns = m["nodes"]
+    gpus = [({"node": n["name"], "gpu": g["index"], "vendor": g["vendor"]}, g)
+            for n in ns if n["up"] for g in n["gpus"]]
+    metric("node_up", "1 if the node answered (possibly stale), 0 if unreachable",
+           [({"node": n["name"]}, int(n["up"])) for n in ns])
+    metric("node_stale_seconds", "age of the reading shown for a node that missed the deadline",
+           [({"node": n["name"]}, n["stale_s"]) for n in ns])
+    up = [n for n in ns if n["up"]]
+    metric("cpu_utilization_percent", "node CPU utilisation", [({"node": n["name"]}, n["cpu_pct"]) for n in up])
+    metric("memory_used_bytes", "node memory in use", [({"node": n["name"]}, n["mem_used_mib"] * 1048576) for n in up])
+    metric("memory_total_bytes", "node memory", [({"node": n["name"]}, n["mem_total_mib"] * 1048576) for n in up])
+    metric("load1", "1-minute load average", [({"node": n["name"]}, n["load"][0]) for n in up])
+    metric("disk_used_bytes", "root filesystem in use", [({"node": n["name"]}, (n["disk"] or {}).get("used")) for n in up])
+    metric("disk_total_bytes", "root filesystem size", [({"node": n["name"]}, (n["disk"] or {}).get("total")) for n in up])
+    metric("network_receive_bytes_per_second", "receive rate over physical interfaces",
+           [({"node": n["name"]}, (n["net"] or {}).get("rx")) for n in up])
+    metric("network_transmit_bytes_per_second", "transmit rate over physical interfaces",
+           [({"node": n["name"]}, (n["net"] or {}).get("tx")) for n in up])
+    metric("gpu_utilization_percent", "GPU utilisation", [(l, g["util"]) for l, g in gpus])
+    metric("gpu_memory_used_bytes", "GPU memory in use",
+           [(l, None if g["mem_used_mib"] is None else g["mem_used_mib"] * 1048576) for l, g in gpus])
+    metric("gpu_memory_total_bytes", "GPU memory",
+           [(l, None if g["mem_total_mib"] is None else g["mem_total_mib"] * 1048576) for l, g in gpus])
+    metric("gpu_temperature_celsius", "GPU temperature", [(l, g["temp_c"]) for l, g in gpus])
+    metric("gpu_power_watts", "GPU power draw", [(l, g["power_w"]) for l, g in gpus])
+    metric("gpu_idle_held", "1 if a job holds the GPU but has left it idle",
+           [(l, int(g["idle_held"])) for l, g in gpus])
+    metric("gpu_owner_info", "the job and user holding a GPU (value is always 1)",
+           [(dict(l, job=g["job"], user=g["user"] or ""), 1) for l, g in gpus if g["job"]])
+    states = {}
+    for j in m["queue"]:
+        states[j.get("state", "")] = states.get(j.get("state", ""), 0) + 1
+    metric("jobs", "jobs in the Slurm queue by state", [({"state": k}, v) for k, v in sorted(states.items())])
+    return "\n".join(lines) + "\n"
+
+
+def web_strings():
+    return {k: v for k, v in STRINGS[_lang].items()}
+
+
+def parse_listen(s):
+    """--web 的值：8765、:8765、0.0.0.0:8765、[::1]:8765。沒給位址就只聽本機。"""
+    s = (s or "").strip()
+    m = re.match(r"^(?:(?:\[([^\]]+)\]|([^:\[\]]*)):)?(\d+)$", s) if s else None
+    if not m:
+        raise ValueError("expected [ADDRESS:]PORT, got %r" % s)
+    return (m.group(1) or m.group(2) or "127.0.0.1"), int(m.group(3))
+
+
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def web_handler(state, bind):
+    import http.server
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        server_version = "slurmtop/" + __version__
+
+        def log_message(self, *a):               # 不要每個請求都印一行
+            pass
+
+        def send(self, code, body, ctype):
+            data = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'")
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+
+        def host_ok(self):
+            # 只聽本機時檢查 Host，擋掉 DNS rebinding（別的網站把自己的網域指到 127.0.0.1 來讀資料）
+            if bind not in LOOPBACK:
+                return True
+            host = (self.headers.get("Host") or "").strip()
+            if host.startswith("["):                  # [::1]:8765
+                name = host[1:].split("]", 1)[0]
+            else:                                     # localhost:8765、127.0.0.1
+                name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+            return name in LOOPBACK
+
+        def do_GET(self):
+            if not self.host_ok():
+                return self.send(403, "forbidden host\n", "text/plain; charset=utf-8")
+            path = self.path.split("?", 1)[0]
+            with state["lock"]:
+                m, metrics = state.get("model"), state.get("metrics")
+            if path in ("/", "/index.html"):
+                return self.send(200, WEB_HTML.replace("{lang}", "zh-Hant" if _lang == "zh" else "en")
+                                 .replace("{version}", __version__), "text/html; charset=utf-8")
+            if path == "/app.css":
+                return self.send(200, WEB_CSS, "text/css; charset=utf-8")
+            if path == "/app.js":
+                return self.send(200, WEB_JS, "text/javascript; charset=utf-8")
+            if path == "/api/state":
+                if m is None:
+                    return self.send(503, json.dumps({"message": T("w_loading")}),
+                                     "application/json; charset=utf-8")
+                return self.send(200, json.dumps(m, ensure_ascii=False), "application/json; charset=utf-8")
+            if path == "/metrics":
+                if metrics is None:
+                    return self.send(503, "# no sample yet\n", "text/plain; charset=utf-8")
+                return self.send(200, metrics, "text/plain; version=0.0.4; charset=utf-8")
+            if path == "/healthz":
+                return self.send(200, "ok\n", "text/plain; charset=utf-8")
+            return self.send(404, "not found\n", "text/plain; charset=utf-8")
+
+        do_HEAD = do_GET
+
+    return Handler
+
+
+def serve_web(nodes, opt):
+    """--web：背景一條執行緒照 -n 的間隔取樣，HTTP 伺服器只讀最新的一份。"""
+    import http.server
+    host, port = parse_listen(opt.web)
+    state = {"lock": threading.Lock(), "model": None, "metrics": None}
+
+    def sampler():
+        while True:
+            t0 = time.monotonic()
+            try:
+                m = model(sample(nodes, opt), opt)
+                m["ui"], m["interval"] = web_strings(), opt.interval
+                text = prometheus(m)
+                with state["lock"]:
+                    state["model"], state["metrics"] = m, text
+            except Exception as e:                    # 取樣出錯不能讓伺服器停掉
+                sys.stderr.write("slurmtop: sample failed: %r\n" % (e,))
+            time.sleep(max(0.2, opt.interval - (time.monotonic() - t0)))
+
+    threading.Thread(target=sampler, daemon=True).start()
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+
+    class Server(http.server.ThreadingHTTPServer):
+        address_family = family
+        daemon_threads = True
+
+    httpd = Server((host, port), web_handler(state, host))
+    port = httpd.server_address[1]
+    shown = "[%s]" % host if ":" in host else host
+    print(T("w_serving") % ("http://%s:%d/" % (shown, port)), flush=True)
+    if host in LOOPBACK:
+        print(T("w_tunnel") % (port, port, local_host()), flush=True)
+    else:
+        print(T("w_exposed"), flush=True)
+    httpd.serve_forever()
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description="One-screen dashboard for small GPU clusters (Slurm + nvidia-smi).",
@@ -2344,6 +2743,9 @@ def parse_args(argv=None):
     ap.add_argument("-n", "--interval", type=float, default=2.0,
                     help="refresh interval in seconds (default: 2)")
     ap.add_argument("--once", action="store_true", help="print one frame and exit")
+    ap.add_argument("--web", nargs="?", const="127.0.0.1:8765", metavar="[ADDR:]PORT",
+                    help="serve a live dashboard in the browser, plus /api/state (JSON) and "
+                         "/metrics (Prometheus); default 127.0.0.1:8765 - use ssh -L to view it")
     ap.add_argument("--json", action="store_true",
                     help="print one sample as JSON and exit (for scripts and other tools)")
     ap.add_argument("--nodes", help="comma-separated node list (default: discover from Slurm)")
@@ -2493,6 +2895,12 @@ def main():
     if not nodes:
         sys.exit("no nodes found - pass --nodes host1,host2 or --ssh-config")
 
+    if args.web:
+        try:
+            serve_web(nodes, args)
+        except KeyboardInterrupt:
+            pass
+        return
     if args.json:                           # 一次取樣、印 JSON 就結束，給腳本和其他工具用
         if args.node_timeout is None:
             args.node_timeout = ONCE_TIMEOUT
