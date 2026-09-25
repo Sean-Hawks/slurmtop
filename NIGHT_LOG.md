@@ -226,3 +226,107 @@ rc=0，畫面正常（NODE localhost、DSK 52.1%）
 ```
 
 共 104 個測試、20 個 golden frame。`slurmtop` 仍是單一檔案、只用標準函式庫。
+
+---
+
+# 第二輪：讓各種機器都能用（feature/everywhere）
+
+目標：「讓所有機器在想要有圖形化的效能評估介面時都可以使用這個專案」。分支 `feature/everywhere`
+從 `overnight/v1.1` 開出來，規則照舊：單一檔案、只用標準函式庫、Python 3.8 相容、commit 只掛你、
+沒有 push／PR／發佈。測試從 104 個增加到 **172 個**，兩個直譯器（3.14、macOS 內建 3.9.6）全部通過。
+
+## 做到了什麼
+
+**介面（同一次取樣，四種出口）**
+
+| 介面 | 用法 | 驗證 |
+|---|---|---|
+| 終端機 | 原本的畫面 | golden frame（新增 Apple、AMD、Jetson 三個） |
+| 瀏覽器儀表板 | `slurmtop --web`，用 `ssh -L 8765:localhost:8765 登入節點` 看 | 真的起伺服器打每個端點；在瀏覽器裡看過桌面寬度和手機寬度；用這台 Mac 的真實資料跑過 |
+| Prometheus／Grafana | `--web` 的 `/metrics` | 標籤跳脫、讀不到的值不輸出 |
+| JSON | `--json`（一次）或 `/api/state` | 欄位結構、`--me`、讀不到是 `null` |
+| 效能評估報告 | `--report 秒數`、`--report -- 指令`、`--html 檔名`、`--log 檔名.csv` | 平均／p95／峰值、耗電（梯形積分、不跨斷線）、佔著閒置秒數；包指令時照指令的結束碼離開 |
+
+**硬體和作業系統**
+
+| 機器 | 做法 | 驗證程度 |
+|---|---|---|
+| Apple Silicon Mac | `ioreg` 讀 GPU 使用率和統一記憶體（不用 sudo；溫度、功耗要 sudo，顯示 `-`） | **這台 M3 實測過**，fixture 是錄下來的真實輸出 |
+| Intel Mac（內顯＋AMD 獨顯） | 同上，另讀獨顯的溫度、功耗、VRAM | 只用假資料 |
+| Linux AMD GPU | amdgpu 的 sysfs，不用 rocm-smi | 用假的 `/sys/class/drm` 樹真的跑 shell 段 |
+| NVIDIA Jetson | sysfs 的 GPU load、thermal zone | 用假的 Orin 目錄樹跑 shell 段 |
+| FreeBSD | `kern.cp_time`、`vm.stats`、依標題列找 netstat 欄位 | 錄下來的輸出＋假的 sysctl |
+| 沒有 bash 的機器 | REMOTE 改用 `sh -c '有 bash 用 bash，不然用 sh'` | **在 dash、ksh、sh 下實跑整份腳本**；經由 csh、tcsh、zsh 登入 shell 也實跑過 |
+| Windows（本機） | ctypes 讀 CPU／記憶體、`netstat -e`、`nvidia-smi.exe`；主控台開 VT 模式；`install.ps1` | 只有 mock，**需在 Windows 實測** |
+| 終端機不支援 Unicode | 自動整個畫面改 ASCII，不再因為 UnicodeEncodeError 掛掉 | 用 ascii／cp1252／cp950 等編碼實跑 |
+
+**安全與穩健**
+
+- 網頁：叢集來的字串一律 `textContent`、嚴格 CSP、沒有內嵌腳本；只聽本機時檢查 Host 擋 DNS rebinding；
+  在瀏覽器裡用 `<img onerror=…>` 當 job 名稱測過，只顯示成文字。
+- 終端機：job 名稱、使用者、行程名稱裡的控制字元（ESC、OSC 52 寫剪貼簿、改視窗標題）全部去掉。
+- 沒有 Slurm 的工作站：不顯示空的佇列，標題用主機名稱；有 Slurm 但 squeue 沒回應時改顯示「squeue 沒有回應」。
+
+## 自我審查
+
+做完後又開了一次唯讀審查，它回報 6 個確認的問題和 5 個可能的問題，**全部修掉並有測試**
+（每個測試都確認在修之前會失敗）：`--report` 在第一次取樣前被中斷會崩潰、第二次 Ctrl-C 會留下孤兒行程、
+被訊號殺掉的指令結束碼錯、`--log`／`--html` 路徑錯要等指令跑了才發現、`--web` 綁不到埠時吐 traceback、
+squeue 一時太慢被誤判成「沒有 Slurm」、10 張以上 AMD 卡編號錯、GPU 編號撞號、耗電跨斷線積分、
+`--json` 在 ASCII 輸出下把中文變成 `?`、Windows `--no-color` 沒開 VT 模式。
+
+## 要老實說的一件事
+
+`e664113`（Apple GPU）這個 commit 進去的時候有 2 個測試是失敗的：我當時用 `… | tail -1 && git commit`，
+結束碼是 `tail` 的，所以沒擋住。失敗的原因是測試本身（jobs 段的測試多跑到新加的段落），下一個 commit
+`07a2963` 就修好了。之後每次 commit 前都改用會檢查兩個直譯器結果的腳本。事後也把兩個分支的**每一個
+commit**都各自跑過一次完整測試：除了 `e664113` 以外全部通過（第一輪前幾個 commit 帶著當時刻意標記的
+expected failure，是預期中的）。
+
+## 需在其他機器上實測
+
+```bash
+# Windows（PowerShell）
+irm https://raw.githubusercontent.com/Sean-Hawks/slurmtop/main/install.ps1 | iex   # 或 py slurmtop
+py slurmtop --once --nodes localhost
+py slurmtop --once --nodes localhost > out.txt      # 導向檔案時要自動改 ASCII，不能掛掉
+py slurmtop --web                                    # 瀏覽器開 http://127.0.0.1:8765
+
+# AMD 節點：sysfs 的數字要和 rocm-smi 一致，編號要和 Slurm 的 IDX 一致
+cat /sys/class/drm/card*/device/gpu_busy_percent
+rocm-smi --showuse --showmemuse --showtemp --showpower
+slurmtop --once --nodes <amd節點>
+
+# Jetson：和 tegrastats 的 GR3D 比
+cat /sys/devices/platform/*.ga10b/load 2>/dev/null || cat /sys/devices/gpu.0/load
+tegrastats --interval 1000 & slurmtop --nodes localhost
+
+# FreeBSD：和 top、netstat -ibn 比
+slurmtop --once --nodes <bsd主機>
+
+# 叢集上的網頁與 Prometheus
+slurmtop --web                                      # 在登入節點
+ssh -N -L 8765:localhost:8765 <登入節點>             # 在自己的電腦，再開 http://localhost:8765
+curl -s localhost:8765/metrics | head
+
+# 在 job 裡評估一個程式（報告只看這個節點）
+slurmtop --nodes "$(hostname -s)" --report --html report-$SLURM_JOB_ID.html -- python train.py
+```
+
+## 替你做的決定
+
+- `--web` 預設只聽 `127.0.0.1:8765`、**沒有登入機制**；要對外請自己放在會驗證的反向代理後面（README 有寫）。
+- 網頁的資源全部內嵌，不連 CDN（叢集常常不能上網）。
+- `--report` 包指令時，報告的節點範圍照 `--nodes`／Slurm 偵測；在 job 裡建議用 `--nodes "$(hostname -s)"`。
+- 耗電用梯形法積分，中間空檔超過 2.5 個取樣間隔的那段不算。
+- Intel GPU 沒做：Linux 的 i915／xe 驅動不給 root 以外的使用率，datacenter 卡要 xpu-smi，這台都沒辦法測。
+- Windows 的非 NVIDIA 顯卡沒做：可以用效能計數器（`Get-Counter "\GPU Engine(*)\Utilization Percentage"`），
+  但計數器名稱會依系統語言翻譯，沒有 Windows 可以測，先記下來。
+- 版本號仍是 1.0.0。
+
+## 建議下一步
+
+1. 照上面的指令在 Windows、AMD、Jetson 上各跑一次。
+2. 決定 `--web` 要不要加簡單的 token 驗證（目前靠 ssh tunnel）。
+3. Windows 非 NVIDIA 顯卡、Intel GPU。
+4. 重錄 demo（終端機和網頁各一段），升版到 1.1.0／1.2.0。
