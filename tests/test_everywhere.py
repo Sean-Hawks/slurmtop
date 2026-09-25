@@ -192,5 +192,54 @@ class AmdGpu(unittest.TestCase):
         self.assertEqual((g["idx"], g["util"], g["mem_used"]), ("8", 5, None))
 
 
+class Jetson(unittest.TestCase):
+    """Jetson：GPU 負載在 sysfs，溫度在 thermal zone。用假的 Orin 目錄樹跑一次 shell 段。"""
+
+    def run_segment(self, root):
+        import subprocess
+        m = load()
+        seg = m.REMOTE.split("echo '@@jetson'")[1].split("echo '@@")[0]
+        rd = m.REMOTE.split("echo '@@amdgpu'")[1].split("\n")
+        rd = next(ln for ln in rd if ln.startswith("rd()"))      # jetson 段用到 amdgpu 段定義的 rd()
+        seg = (rd + "\n" + seg).replace("/sys/devices", root + "/devices") \
+            .replace("/sys/class/thermal", root + "/thermal") \
+            .replace("/proc/device-tree/model", root + "/model")
+        p = subprocess.run(["bash", "-c", seg], capture_output=True, text=True, timeout=20)
+        self.assertEqual(p.stderr, "")
+        return m, p.stdout
+
+    def test_orin(self):
+        import tempfile, shutil
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        _write(os.path.join(root, "devices/platform/17000000.ga10b/load"), "734\n")
+        _write(os.path.join(root, "thermal/thermal_zone0/type"), "CPU-therm\n")
+        _write(os.path.join(root, "thermal/thermal_zone0/temp"), "50000\n")
+        _write(os.path.join(root, "thermal/thermal_zone1/type"), "gpu-thermal\n")
+        _write(os.path.join(root, "thermal/thermal_zone1/temp"), "47500\n")
+        with open(os.path.join(root, "model"), "wb") as f:
+            f.write(b"NVIDIA Jetson AGX Orin Developer Kit\x00")
+        m, out = self.run_segment(root)
+        self.assertEqual(out.strip(), "734 47500 NVIDIA_Jetson_AGX_Orin_Developer_Kit")
+        (g,) = m.parse_jetson(out, 65536, 12000)
+        self.assertEqual((g["util"], g["temp"], g["mem_used"], g["mem_total"], g["model"], g["vendor"]),
+                         (73.4, 47.5, 12000, 65536, "NVIDIA Jetson AGX Orin Developer Kit", "jetson"))
+
+    def test_not_a_jetson(self):
+        import tempfile
+        m, out = self.run_segment(tempfile.mkdtemp())
+        self.assertEqual(out, "")
+        self.assertEqual(m.parse_jetson(""), [])
+
+    def test_nvidia_smi_wins(self):
+        """新版 JetPack 的 nvidia-smi 讀得到卡時，不再另外加一張 Jetson GPU。"""
+        m = load()
+        out = ("@@cpu\nPCT 5\n@@load\n1 1 1\n8\n@@mem\n100 50\n@@gpu\n"
+               "0, GPU-x, 12, 1, 2, 40, 10\n@@proc\n@@jetson\n500 40000 Orin\n")
+        with mock.patch.object(m, "run_script", return_value=out):
+            d = m.snapshot("x")
+        self.assertEqual([g["vendor"] if "vendor" in g else "nvidia" for g in d["gpus"]], ["nvidia"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -656,6 +656,21 @@ for d in /sys/class/drm/card[0-9]*/device; do
   echo "$(basename "$(dirname "$d")") $(rd "$d/gpu_busy_percent") $(rd "$d/mem_info_vram_used")" \
        "$(rd "$d/mem_info_vram_total") $(rd "$hw/temp1_input") $pw $(rd "$d/unique_id")"
 done
+echo '@@jetson'
+# NVIDIA Jetson（Nano、TX2、Xavier、Orin）：nvidia-smi 沒有或讀不到東西，GPU 負載在 sysfs 的
+# load（0-1000），溫度在 GPU 的 thermal zone（毫°C），記憶體跟 CPU 共用。印「負載 溫度 型號」。
+for f in /sys/devices/gpu.0/load /sys/devices/platform/gpu.0/load /sys/devices/*.gv11b/load \
+         /sys/devices/*.gp10b/load /sys/devices/platform/*.ga10b/load \
+         /sys/devices/platform/bus@0/*.gpu/load; do
+  [ -r "$f" ] || continue
+  t=-
+  for z in /sys/class/thermal/thermal_zone*; do
+    case "$(rd "$z/type")" in GPU-therm|gpu-thermal|GPU-thermal) t=$(rd "$z/temp") ;; esac
+  done
+  model=$(tr -d '\\000' < /proc/device-tree/model 2>/dev/null | tr ' ' '_')
+  echo "$(rd "$f") $t ${{model:--}}"
+  break
+done
 echo '@@applegpu'
 # macOS 的 GPU（Apple Silicon、Intel Mac 的內顯／獨顯）：ioreg 不用 sudo 就讀得到使用率。
 # 每個加速器一段，以 "+-o" 開頭；解析在 parse_ioreg()。
@@ -1028,6 +1043,8 @@ def snapshot(node):
     d["procs"] = [p for p in map(parse_proc, parts[4].splitlines()) if p]
     link_procs(d["gpus"], d["procs"], parse_pidjobs(secs.get("jobs", "")))
     d["gpus"] += parse_amdgpu(secs.get("amdgpu", ""), len(d["gpus"]))
+    if not d["gpus"]:                  # 新版 JetPack 有 nvidia-smi；讀得到就不重複算
+        d["gpus"] += parse_jetson(secs.get("jetson", ""), d["mem_total"], d["mem_used"])
     d["gpus"] += parse_ioreg(secs.get("applegpu", ""), d["mem_total"], len(d["gpus"]))
     d["disk"] = parse_disk(secs.get("disk", ""))
     d["net"] = None                              # (收, 送) bytes/s；第一次取樣還算不出來
@@ -1071,6 +1088,19 @@ def parse_amdgpu(text, start=0):
         gpus.append(_gpu(start + len(gpus), "amd", val(f[1]), val(f[2], 1048576),
                          val(f[3], 1048576), val(f[4], 1000), val(f[5], 1e6), uuid=uid))
     return gpus
+
+
+def parse_jetson(text, mem_total_mib=None, mem_used_mib=None):
+    """REMOTE 的 jetson 段 -> 一張 GPU。負載 0-1000、溫度毫°C；記憶體是整台共用的 RAM。"""
+    f = (text or "").split()
+    if len(f) < 2:
+        return []
+    load_ = num(f[0])
+    temp = num(f[1])
+    model = f[2].replace("_", " ") if len(f) > 2 and f[2] != "-" else "Jetson"
+    return [_gpu(0, "jetson", None if load_ is None else load_ / 10,
+                 mem_used_mib or None, mem_total_mib or None,
+                 None if temp is None else temp / 1000, None, model)]
 
 
 def parse_ioreg(text, mem_total_mib=None, start=0):

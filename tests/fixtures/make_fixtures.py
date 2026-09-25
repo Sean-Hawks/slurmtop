@@ -304,6 +304,12 @@ def main():
                       scontrol_job(951, "chen", "RUNNING", [("m1", "gpu:mi300x:2(IDX:4-5)")])]) + "\n",
                   "node/m1.txt": remote(ncpu=192, extra={"amdgpu": "\n".join(mi)})})
 
+    # 15. Jetson AGX Orin 邊緣裝置：沒有 nvidia-smi、沒有 Slurm
+    write("jetson", {"hostname.txt": "orin\n",
+                     "node/orin.txt": remote(load="3.1 2.8 2.5", ncpu=12, mem=(62841, 18230),
+                                             disk="61255492 40171432 18554252",
+                                             extra={"jetson": "734 47500 NVIDIA_Jetson_AGX_Orin"})})
+
     # 9. 連續兩次取樣（CPU% 要兩筆 /proc/stat 才算得出來）
     write("seq", {"hostname.txt": "n1\n",
                   "node/n1.1.txt": remote(cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",
