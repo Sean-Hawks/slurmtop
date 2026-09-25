@@ -644,6 +644,12 @@ echo "$apps" | cut -d, -f2 | tr -d ' ' | sort -u | while read -r pid; do
   user=$(stat -c %U "/proc/$pid" 2>/dev/null || ps -o user= -p "$pid" 2>/dev/null)
   echo "$pid ${{job:--}} ${{user:--}}"
 done
+echo '@@applegpu'
+# macOS 的 GPU（Apple Silicon、Intel Mac 的內顯／獨顯）：ioreg 不用 sudo 就讀得到使用率。
+# 每個加速器一段，以 "+-o" 開頭；解析在 parse_ioreg()。
+command -v ioreg >/dev/null 2>&1 && \
+  ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | \
+  grep -E '^\\+-o|"(model|PerformanceStatistics|gpu-core-count)"'
 echo '@@disk'
 # 根目錄的 KiB：總量 已用 可用。macOS 的 / 是唯讀的系統卷（永遠只用了幾 %），
 # 使用者的資料在 /System/Volumes/Data，那個才是會滿的。
@@ -1009,6 +1015,7 @@ def snapshot(node):
     d["gpus"] = [g for g in map(parse_gpu, parts[3].splitlines()) if g]
     d["procs"] = [p for p in map(parse_proc, parts[4].splitlines()) if p]
     link_procs(d["gpus"], d["procs"], parse_pidjobs(secs.get("jobs", "")))
+    d["gpus"] += parse_ioreg(secs.get("applegpu", ""), d["mem_total"], len(d["gpus"]))
     d["disk"] = parse_disk(secs.get("disk", ""))
     d["net"] = None                              # (收, 送) bytes/s；第一次取樣還算不出來
     cur = parse_net(secs.get("net", ""))
@@ -1022,6 +1029,53 @@ def snapshot(node):
 
 
 _net_prev = {}                                   # 節點 -> ((收, 送) 累計 bytes, 取樣時間)
+
+
+def _gpu(idx, vendor, util=None, mem_used=None, mem_total=None, temp=None, power=None,
+         model=None, uuid=None):
+    """非 NVIDIA 的卡也整理成跟 parse_gpu() 一樣的 dict，後面的程式不必分廠牌。"""
+    return {"idx": str(idx), "uuid": uuid, "util": util, "mem_used": mem_used,
+            "mem_total": mem_total, "temp": temp, "power": power, "jobs": [], "users": [],
+            "vendor": vendor, "model": model}
+
+
+def parse_ioreg(text, mem_total_mib=None, start=0):
+    """ioreg -c IOAccelerator 的輸出 -> GPU 清單。
+
+    Apple Silicon：使用率是 "Device Utilization %"，記憶體是和 CPU 共用的統一記憶體，
+    已用量是 "In use system memory"、總量就是整台的 RAM。溫度和功耗要 sudo powermetrics
+    才讀得到，這裡一律 None。Intel Mac 的 AMD 獨顯另有 "GPU Activity(%)"、
+    "Temperature(C)"、"Total Power(W)"、vramUsedBytes / vramFreeBytes，有就用。
+    """
+    blocks = []
+    for ln in (text or "").splitlines():
+        if ln.startswith("+-o"):
+            blocks.append({})
+        elif blocks:
+            m = re.search(r'"(model|gpu-core-count)"\s*=\s*(?:<?"?)([^">]*)', ln)
+            if m:
+                blocks[-1][m.group(1)] = m.group(2).strip()
+            if '"PerformanceStatistics"' in ln:
+                blocks[-1]["stats"] = {k: float(v) for k, v in
+                                       re.findall(r'"([^"]+)"=(\d+(?:\.\d+)?)', ln)}
+    gpus = []
+    for b in blocks:
+        st = b.get("stats")
+        if st is None:
+            continue
+        util = st.get("Device Utilization %", st.get("GPU Activity(%)"))
+        if "vramUsedBytes" in st:
+            used = st["vramUsedBytes"] / 1048576
+            total = used + st.get("vramFreeBytes", 0) / 1048576
+        else:
+            used = st["In use system memory"] / 1048576 if "In use system memory" in st else None
+            total = mem_total_mib or None
+        model = b.get("model") or None
+        if model and b.get("gpu-core-count"):
+            model += " %s-core" % b["gpu-core-count"]
+        gpus.append(_gpu(start + len(gpus), "apple", util, used, total,
+                         st.get("Temperature(C)"), st.get("Total Power(W)"), model))
+    return gpus
 
 
 def parse_disk(text):
@@ -1188,6 +1242,8 @@ def owner_tag(node, g):
         out += " " + cyan(jid) + (" " + dim(user) if user else "")
     elif user:
         out += " " + dim("(%s)" % user)
+    elif g.get("model"):                         # 沒有人佔用時，至少告訴你這是哪張卡
+        out += " " + dim(g["model"])
     return out
 
 

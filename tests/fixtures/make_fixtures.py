@@ -36,14 +36,24 @@ DISK_42 = "1843200000 774144000 1069056000"      # df -Pk / 的 KiB：1.7T 用�
 
 def remote(gpus=(), procs=(), jobs=(), cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",
            load="7.0 6.5 6.1", ncpu=224, mem=(2063000, 976000), disk=DISK_42,
-           net="918273645 123456789"):
+           net="918273645 123456789", extra=None):
     """組出一份 REMOTE 的輸出。參數順序跟腳本的段落一樣。jobs 是 "pid job user"。"""
     out = ["@@cpu", cpu, "@@load", load, str(ncpu), "@@mem", "%d %d" % mem, "@@gpu"]
     out += list(gpus)
     out += ["@@proc"] + list(procs)
     out += ["@@jobs"] + list(jobs)
+    for name, body in (extra or {}).items():       # 其他廠牌的 GPU 段落（applegpu、amdgpu…）
+        out += ["@@" + name, body]
     out += ["@@disk", disk, "@@net", net]
     return "\n".join(out) + "\n"
+
+
+# 這台 M3 MacBook 上 ioreg -r -d 1 -w 0 -c IOAccelerator 的真實輸出（grep 過）
+IOREG_M3 = """\
++-o AGXAcceleratorG15G  <class AGXAcceleratorG15G, id 0x100000481, registered, matched, active, busy 0 (517 ms), retain 88>
+      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=5437849600,"Tiler Utilization %"=26,"recoveryCount"=0,"lastRecoveryTime"=0,"Renderer Utilization %"=25,"TiledSceneBytes"=884736,"Device Utilization %"=26,"SplitSceneCount"=0,"Allocated PB Size"=97648640,"In use system memory"=862388224}
+      "model" = "Apple M3"
+      "gpu-core-count" = 10"""
 
 
 def scontrol_job(jid, user, state, alloc, name="job"):
@@ -266,6 +276,13 @@ def main():
         many["node/%s.txt" % n] = remote(full_gpus(node=n) if k % 3 == 0 else idle_gpus(node=n),
                                          load="%d.0 5.0 4.0" % k)
     write("many", many)
+
+    # 13. Apple Silicon 筆電（這台 M3 錄下來的）：沒有 nvidia-smi、沒有 Slurm
+    write("applesilicon", {"hostname.txt": "m3\n",
+                           "node/m3.txt": remote(cpu="PCT 41.1", load="4.12 4.27 3.77", ncpu=8,
+                                                 mem=(16384, 12144),
+                                                 disk="971350180 487314376 448005680",
+                                                 extra={"applegpu": IOREG_M3})})
 
     # 9. 連續兩次取樣（CPU% 要兩筆 /proc/stat 才算得出來）
     write("seq", {"hostname.txt": "n1\n",

@@ -61,6 +61,13 @@ class Compat(unittest.TestCase):
                 else:
                     self.assertIn(top, STDLIB, f"{mod} is not in the known stdlib list")
 
+    def test_compiles_without_warnings(self):
+        """例如 f-string 裡少跳脫一層的反斜線：現在是 SyntaxWarning，之後的 Python 會變錯誤。"""
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(self.src, SCRIPT, "exec")
+
     def test_install_sh_check_passes(self):
         """install.sh 下載後用 ast.parse 驗證，這裡做一樣的事。"""
         ast.parse(self.src)
