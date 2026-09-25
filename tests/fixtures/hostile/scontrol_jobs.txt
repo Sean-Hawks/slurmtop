@@ -1,0 +1,1 @@
+JobId=990 JobName=job UserId=mal]0;pwnedlory(1001) GroupId=mal]0;pwnedlory(1001) Priority=1 JobState=RUNNING Reason=None NumNodes=1 TresPerNode=gres/gpu:8 Nodes=n1 CPU_IDs=0-31 Mem=0 GRES=gpu:h200:1(IDX:0)

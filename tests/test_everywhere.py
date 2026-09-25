@@ -541,5 +541,26 @@ class WebDashboard(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
 
 
+class HostileStrings(unittest.TestCase):
+    """別人取的 job 名稱／使用者／行程名稱不能對我們的終端機發控制序列。"""
+
+    def test_terminal(self):
+        for args in (["--no-color", "--proc"], ["--proc"], ["--dense"], ["--flair", "--proc"]):
+            with self.subTest(args):
+                out = run("hostile", *args).stdout
+                self.assertNotIn("\x1b]", out)                 # 沒有任何 OSC（剪貼簿、標題）
+                self.assertNotIn("\x1b[2J", out)
+                self.assertNotIn("\x07", out)
+                if "--no-color" in args:
+                    self.assertNotIn("\x1b", out)
+                self.assertIn("evil]52", out)                  # 名稱照樣看得到（會被欄寬截斷），只是無害
+
+    def test_json(self):
+        d = as_json("hostile")
+        self.assertEqual(d["queue"][0]["name"], "evil]52;c;cm0gLXJmIH4=job")
+        self.assertEqual(d["queue"][0]["user"], "mal]0;pwnedlory")
+        self.assertNotIn("\x1b", json.dumps(d, ensure_ascii=False))
+
+
 if __name__ == "__main__":
     unittest.main()

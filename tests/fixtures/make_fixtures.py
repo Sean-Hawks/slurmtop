@@ -310,6 +310,19 @@ def main():
                                              disk="61255492 40171432 18554252",
                                              extra={"jetson": "734 47500 NVIDIA_Jetson_AGX_Orin"})})
 
+    # 16. 惡意字串：別的使用者把終端機控制序列塞進 job 名稱、使用者、行程名稱
+    osc52 = "evil\x1b]52;c;cm0gLXJmIH4=\x07job"            # 寫剪貼簿
+    clear = "/tmp/\x1b[2J\x1b[Hwipe"                         # 清畫面、移游標
+    title = "mal\x1b]0;pwned\x07lory"                        # 改視窗標題
+    write("hostile", {**slurm_common(("n1",)),
+                      "sinfo.txt": sinfo([("n1", "mixed", "8/216/0/224")]),
+                      "squeue.txt": squeue_line(990, osc52, "R", "1:00", "59:00", 1, 8, "gres/gpu:1",
+                                                "n1", "1:00:00", title) + "\n",
+                      "scontrol_jobs.txt": scontrol_job(990, title, "RUNNING",
+                                                        [("n1", "gpu:h200:1(IDX:0)")]) + "\n",
+                      "node/n1.txt": remote(idle_gpus(), [proc_line(0, 4242, 100, clear)],
+                                            ["4242 990 " + title])})
+
     # 9. 連續兩次取樣（CPU% 要兩筆 /proc/stat 才算得出來）
     write("seq", {"hostname.txt": "n1\n",
                   "node/n1.1.txt": remote(cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",

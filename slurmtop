@@ -913,6 +913,16 @@ SINFO = 'sinfo -h -N -o "%N|%T|%C|%e/%m"'
 SCONTROL_JOBS = "scontrol -d -o show job"
 
 
+# 控制字元（ESC、BEL、C1…）。job 名稱、使用者、行程名稱是別人可以隨便取的，
+# 原樣印到終端機上就能發控制序列：移游標偽造畫面、改視窗標題、OSC 52 寫剪貼簿。
+_CTRL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def untrusted(text):
+    """從叢集來的文字去掉控制字元，只留換行和 tab。"""
+    return _CTRL.sub("", text or "")
+
+
 def slurm_query(_=None):
     """佇列、節點資源、GPU 分配。squeue 失敗（沒裝 Slurm、控制器沒回應、逾時）回傳 None，
     讓 fetch() 沿用上一次的資料：把失敗當成「沒有 job」會清掉 GPU 的分配紀錄，
@@ -920,8 +930,8 @@ def slurm_query(_=None):
     q = sh(SQUEUE, key="squeue", strict=True)
     if q is None:
         return None
-    return (q.strip(), sh(SINFO, key="sinfo").strip(),
-            sh(SCONTROL_JOBS, key="scontrol_jobs").strip())
+    return (untrusted(q).strip(), untrusted(sh(SINFO, key="sinfo")).strip(),
+            untrusted(sh(SCONTROL_JOBS, key="scontrol_jobs")).strip())
 
 
 def parse_queue(raw):
@@ -1120,7 +1130,7 @@ def sections(out):
 
 def snapshot(node):
     # 不在這裡重試：慢的節點交給 fetch() 的截止時間處理，畫面先沿用上一筆
-    secs = sections(run_script(node, REMOTE))
+    secs = sections(untrusted(run_script(node, REMOTE)))
     if "gpu" not in secs:
         return None
     parts = [secs.get(k, "") for k in SECTIONS]
