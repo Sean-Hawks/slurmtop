@@ -82,6 +82,7 @@ STRINGS = {
         "idle_tag": "IDLE", "idle_alert": "held but idle", "none_mine": "no GPUs in use by %s",
         "alert_down": "unreachable", "alert_hot": "hot %.0f°C", "alert_disk": "disk %.0f%%",
         "alert_more": "+%d more", "nodes": "NODES",
+        "queue_down": "squeue is not responding (Slurm controller down or slow)",
         "w_util": "GPU utilisation", "w_power": "Power", "w_vram": "GPU memory",
         "w_hot": "Hottest GPU", "w_cpu": "CPU", "w_mem": "Memory", "w_disk": "Disk",
         "w_net": "Net", "w_history": "Cluster GPU utilisation", "w_busy": "busy", "w_nodes": "nodes up",
@@ -109,6 +110,7 @@ STRINGS = {
         "idle_tag": "閒置", "idle_alert": "佔著卻閒置", "none_mine": "%s 目前沒有佔用任何 GPU",
         "alert_down": "斷線", "alert_hot": "過熱 %.0f°C", "alert_disk": "磁碟 %.0f%%",
         "alert_more": "還有 %d 項", "nodes": "節點",
+        "queue_down": "squeue 沒有回應（Slurm 控制器當掉或太慢）",
         "w_util": "GPU 使用率", "w_power": "功耗", "w_vram": "GPU 記憶體",
         "w_hot": "最高溫", "w_cpu": "CPU", "w_mem": "記憶體", "w_disk": "磁碟",
         "w_net": "網路", "w_history": "叢集 GPU 使用率", "w_busy": "忙碌", "w_nodes": "台在線",
@@ -936,6 +938,23 @@ _CTRL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 def untrusted(text):
     """從叢集來的文字去掉控制字元，只留換行和 tab。"""
     return _CTRL.sub("", text or "")
+
+
+_slurm = None
+
+
+def slurm_present():
+    """這台有沒有裝 Slurm：看 squeue 找不找得到，只判斷一次。
+
+    不能從每次查詢的結果推：控制器一時慢或當掉時查詢也會失敗，那時應該顯示
+    「squeue 沒回應」，而不是把整個佇列藏起來、好像這台根本沒有 Slurm。
+    """
+    global _slurm
+    if _fx():                                     # 假資料：有 squeue.txt 或 squeue.fail 就算有裝
+        return any(os.path.exists(os.path.join(_fx(), "squeue" + ext)) for ext in (".txt", ".fail"))
+    if _slurm is None:
+        _slurm = shutil.which("squeue") is not None
+    return _slurm
 
 
 def slurm_query(_=None):
@@ -1843,7 +1862,7 @@ def job_header(narrow):
             f"{rpad(T('nd'), 2)} {rpad(T('cpu'), 4)} {rpad(T('gpu'), 4)}  {T('where')}")
 
 
-def slurm_section(width, max_rows=99, job_cols=1, data=None, user=None, age=None):
+def slurm_section(width, max_rows=99, job_cols=1, data=None, user=None, age=None, down=False):
     """回傳 (畫面行, 沒顯示到的 job 數)。job_cols>1 時佇列會排成多欄；user 只列他的 job；
     age 不是 None 表示 squeue 這次沒回應，顯示的是舊資料。"""
     inner = width - 2
@@ -1860,7 +1879,9 @@ def slurm_section(width, max_rows=99, job_cols=1, data=None, user=None, age=None
     parsed = parse_queue(raw)
     if user:
         parsed = [f for f in parsed if len(f) > 10 and f[10] == user]
-    if not parsed:
+    if down:
+        line("  " + rgb(*RED, T("queue_down")))
+    elif not parsed:
         line(dim("  " + T("no_jobs")))
     else:
         narrow = job_cols > 1
@@ -2042,19 +2063,22 @@ def sample(nodes, opt):
     """
     # 各節點和 Slurm 同時抓，每個最多等 --node-timeout 秒；卡住的沿用上一筆
     jobs = {("node", n): (snapshot, n) for n in nodes}
-    jobs[("slurm",)] = (slurm_query, None)
+    slurm_ok = slurm_present()
+    if slurm_ok:                                  # 沒裝 Slurm 就不必每次都去跑找不到的指令
+        jobs[("slurm",)] = (slurm_query, None)
     timeout = opt.node_timeout
     if timeout is None:
         timeout = ONCE_TIMEOUT if getattr(opt, "once", False) else NODE_TIMEOUT
     got = fetch(jobs, timeout)
     snaps = [got[("node", n)][0] for n in nodes]
     ages = [got[("node", n)][1] for n in nodes]
-    slurm_data, slurm_age = got[("slurm",)]
-    slurm_ok = slurm_data is not None          # 沒裝 Slurm（或控制器一直連不上）就不顯示佇列
+    slurm_data, slurm_age = got.get(("slurm",), (None, None))
+    slurm_down = slurm_ok and slurm_data is None   # 有 Slurm 但這次（連同舊資料）都拿不到
     slurm_data = slurm_data or ("", "", "")
     update_state(nodes, snaps, ages, slurm_data, opt.idle_samples)
     return {"nodes": list(nodes), "snaps": snaps, "ages": ages, "slurm": slurm_data,
-            "slurm_age": slurm_age, "slurm_ok": slurm_ok, "time": _now()}
+            "slurm_age": slurm_age, "slurm_ok": slurm_ok, "slurm_down": slurm_down,
+            "time": _now()}
 
 
 def render(nodes, opt=None, sampled=None, **kw):
@@ -2070,6 +2094,7 @@ def render(nodes, opt=None, sampled=None, **kw):
     nodes, snaps, ages = sm["nodes"], sm["snaps"], sm["ages"]
     slurm_data, slurm_age = sm["slurm"], sm["slurm_age"]
     slurm_ok = sm.get("slurm_ok", True)
+    slurm_down = sm.get("slurm_down", False)
     head_snaps = snaps
     me = my_user() if opt.me else None
     if me:                                  # --me：只留自己佔用的 GPU 和自己的 job
@@ -2088,7 +2113,8 @@ def render(nodes, opt=None, sampled=None, **kw):
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr, ages=ages,
                               me=me, head_snaps=head_snaps, dense=dense,
-                              slurm_age=slurm_age, slurm_ok=slurm_ok)
+                              slurm_age=slurm_age, slurm_ok=slurm_ok,
+                              slurm_down=slurm_down)
             if best is None or len(frame) < len(best[0]):
                 best = (frame, jcols)
             if len(frame) <= lines:
@@ -2100,7 +2126,8 @@ def render(nodes, opt=None, sampled=None, **kw):
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr,
                               scope_h=6 + spare, ages=ages, me=me, head_snaps=head_snaps,
-                              dense=dense, slurm_age=slurm_age, slurm_ok=slurm_ok)
+                              dense=dense, slurm_age=slurm_age, slurm_ok=slurm_ok,
+                              slurm_down=slurm_down)
         return "\n".join(frame)
 
     # --fit：硬塞進一頁。依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄 -> 裁 job。
@@ -2113,7 +2140,8 @@ def render(nodes, opt=None, sampled=None, **kw):
                                sp, compact, jcols, slurm_data=slurm_data,
                                want_qr=want_qr and not compact, ages=ages,
                                me=me, head_snaps=head_snaps, dense=dense,
-                               slurm_age=slurm_age, slurm_ok=slurm_ok)
+                               slurm_age=slurm_age, slurm_ok=slurm_ok,
+                              slurm_down=slurm_down)
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
@@ -2188,7 +2216,8 @@ def model(sm, opt=None):
         jobs.append(j)
     return {
         "version": __version__, "time": sm["time"], "cluster": _title, "summary": summary,
-        "nodes": out_nodes, "slurm": sm.get("slurm_ok", True), "queue": jobs,
+        "nodes": out_nodes, "slurm": sm.get("slurm_ok", True),
+        "slurm_down": sm.get("slurm_down", False), "queue": jobs,
         "queue_stale_s": _r(sm["slurm_age"], 0),
         "alerts": [{"level": "red" if c == RED else "warn", "text": t}
                    for c, t in alerts(nodes, snaps, ages)],
@@ -2299,7 +2328,8 @@ def dense_panel(nodes, snaps, ages, width):
 
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
            job_cols=1, slurm_data=("", ""), want_qr=False, scope_h=6, ages=None,
-           me=None, head_snaps=None, dense=False, slurm_age=None, slurm_ok=True):
+           me=None, head_snaps=None, dense=False, slurm_age=None, slurm_ok=True,
+           slurm_down=False):
     # 版面填滿整個終端機：先決定一排放幾個面板，再把寬度平均分掉，
     # 而不是用固定寬度、右邊留一大塊空白。
     total_w, percol, panel_w = _layout(cols, len(nodes), force_stack or dense)
@@ -2340,7 +2370,7 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
         # 只會把欄位截斷。這種情況一律用單欄，看得清楚。
         one, hidden_one = slurm_section(total_w - qw, max_rows=max(1, budget),
                                         job_cols=1, data=slurm_data, user=me,
-                                        age=slurm_age)
+                                        age=slurm_age, down=slurm_down)
         # QR 旁邊剩下的寬度不夠每欄放下完整的窄版 job 列時，也維持單欄
         too_narrow = (total_w - qw - 2) // job_cols < JOB_FIXED_NARROW + 4
         if len(one) <= len(qr_panel(0)) or job_cols == 1 or too_narrow:
@@ -2348,11 +2378,11 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
         else:
             sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
                                         job_cols=job_cols, data=slurm_data, user=me,
-                                        age=slurm_age)
+                                        age=slurm_age, down=slurm_down)
     else:
         sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
                                     job_cols=job_cols, data=slurm_data, user=me,
-                                    age=slurm_age)
+                                    age=slurm_age, down=slurm_down)
     if show_qr_panel:
         qr = qr_panel(len(sec))
         # QR 比佇列高的話，把佇列的框往下拉齊，不要在左邊留一塊空洞
@@ -2529,7 +2559,8 @@ function render(d) {
   $("#history").replaceChildren(spark(d.history, 600, 90, true));
   $("#nodes").replaceChildren(...d.nodes.map((n) => nodeCard(n, t)));
   $("#queue").parentElement.hidden = d.slurm === false;     // 沒有 Slurm 的機器不顯示佇列
-  $("#queue").replaceChildren(queueTable(d.queue, t, d.queue_stale_s));
+  $("#queue").replaceChildren(d.slurm_down ? el("div", {class: "down"}, t.queue_down)
+                                          : queueTable(d.queue, t, d.queue_stale_s));
 }
 
 function nodeCard(n, t) {

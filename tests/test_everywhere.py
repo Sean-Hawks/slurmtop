@@ -800,5 +800,46 @@ class WebErrors(unittest.TestCase):
         self.assertEqual(m.web_handler({}, "127.0.0.1").timeout, 30)
 
 
+class SlurmDown(unittest.TestCase):
+    """有裝 Slurm 但控制器沒回應：佇列區塊留著並說明，不能當成「這台沒有 Slurm」。"""
+
+    def fixture_with_failing_squeue(self):
+        import shutil, tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        d = os.path.join(tmp, "f")
+        shutil.copytree(os.path.join(FIXTURES, "idle2x8"), d)
+        open(os.path.join(d, "squeue.fail"), "w").close()
+        return d
+
+    def test_failing_squeue(self):
+        d = self.fixture_with_failing_squeue()
+        out = run(None, "--no-color", SLURMTOP_FIXTURES=d).stdout
+        self.assertIn("Slurm queue", out)
+        self.assertIn("squeue is not responding", out)
+        self.assertNotIn("(no jobs)", out)
+        self.assertIn("hipac-team3", out)                   # 標題照樣是叢集名稱
+        js = json.loads(run(None, "--json", SLURMTOP_FIXTURES=d).stdout)
+        self.assertEqual((js["slurm"], js["slurm_down"]), (True, True))
+
+    def test_slow_squeue(self):
+        import time as _t
+        m = load()
+        m._color = False
+        slow = lambda _=None: (_t.sleep(2), ("", "", ""))[1]
+        with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": os.path.join(FIXTURES, "idle2x8"),
+                                          "COLUMNS": "150", "LINES": "40"}), \
+                mock.patch.object(m, "slurm_query", side_effect=slow):
+            out = m.render(["n1", "n2"], node_timeout=0.3)
+        self.assertIn("squeue is not responding", out)
+
+    def test_presence(self):
+        m = load()
+        with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": os.path.join(FIXTURES, "nogpu")}):
+            self.assertFalse(m.slurm_present())
+        with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": os.path.join(FIXTURES, "idle2x8")}):
+            self.assertTrue(m.slurm_present())
+
+
 if __name__ == "__main__":
     unittest.main()
