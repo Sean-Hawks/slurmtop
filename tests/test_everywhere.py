@@ -119,5 +119,78 @@ class AppleGpu(unittest.TestCase):
         self.assertIsNotNone(gpus[0]["util"])
 
 
+def _write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+class AmdGpu(unittest.TestCase):
+    """Linux 上的 AMD 卡從 amdgpu 的 sysfs 讀。用假的 /sys/class/drm 真的跑一次 shell 段。"""
+
+    def fake_drm(self):
+        import tempfile, shutil
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        c0 = os.path.join(tmp, "card0", "device")
+        for name, v in (("vendor", "0x1002\n"), ("gpu_busy_percent", "87\n"),
+                        ("mem_info_vram_used", "68719476736\n"),
+                        ("mem_info_vram_total", "205822885888\n"), ("unique_id", "a1b2c3\n"),
+                        ("hwmon/hwmon3/temp1_input", "61000\n"),
+                        ("hwmon/hwmon3/power1_average", "512000000\n")):
+            _write(os.path.join(c0, name), v)
+        c1 = os.path.join(tmp, "card1", "device")                 # NVIDIA：不歸這段管
+        _write(os.path.join(c1, "vendor"), "0x10de\n")
+        c2 = os.path.join(tmp, "card2", "device")                 # 只有 power1_input、unique_id 是空的
+        for name, v in (("vendor", "0x1002\n"), ("gpu_busy_percent", "0\n"),
+                        ("mem_info_vram_used", "1048576\n"), ("mem_info_vram_total", "17179869184\n"),
+                        ("unique_id", ""), ("hwmon/hwmon5/temp1_input", "40000\n"),
+                        ("hwmon/hwmon5/power1_input", "15000000\n")):
+            _write(os.path.join(c2, name), v)
+        os.makedirs(os.path.join(tmp, "card0-DP-1"))
+        os.symlink(c0, os.path.join(tmp, "card0-DP-1", "device"))  # 接頭，不能重複算
+        return tmp
+
+    def run_segment(self, drm):
+        import subprocess
+        m = load()
+        seg = m.REMOTE.split("echo '@@amdgpu'")[1].split("echo '@@")[0]
+        p = subprocess.run(["bash", "-c", seg.replace("/sys/class/drm", drm)],
+                           capture_output=True, text=True, timeout=20)
+        self.assertEqual(p.stderr, "")
+        return m, p.stdout
+
+    def test_sysfs(self):
+        m, out = self.run_segment(self.fake_drm())
+        self.assertEqual(out.splitlines(), [
+            "card0 87 68719476736 205822885888 61000 512000000 a1b2c3",
+            "card2 0 1048576 17179869184 40000 15000000 -"])
+        a, b = m.parse_amdgpu(out)
+        self.assertEqual((a["idx"], a["util"], a["mem_used"], a["mem_total"], a["temp"], a["power"],
+                          a["uuid"], a["vendor"]),
+                         ("0", 87, 65536, 196288, 61, 512, "AMD-a1b2c3", "amd"))
+        self.assertEqual((b["idx"], b["power"], b["uuid"]), ("1", 15, None))
+
+    def test_no_amd(self):
+        import tempfile
+        m, out = self.run_segment(tempfile.mkdtemp())
+        self.assertEqual(out, "")
+        self.assertEqual(m.parse_amdgpu(""), [])
+
+    def test_amd_node_frame(self):
+        d = as_json("amd", "--idle-samples", "1")
+        gpus = d["nodes"][0]["gpus"]
+        self.assertEqual(len(gpus), 8)
+        self.assertEqual({g["vendor"] for g in gpus}, {"amd"})
+        self.assertEqual((gpus[0]["job"], gpus[0]["user"], gpus[0]["util"]), ("950", "hawks", 93))
+        self.assertEqual([g["idle_held"] for g in gpus], [False] * 4 + [True, True, False, False])
+        self.assertEqual(d["summary"]["power_w"], 4 * 650 + 4 * 140)
+
+    def test_after_nvidia(self):
+        m = load()
+        (g,) = m.parse_amdgpu("card3 5 - - - - -", start=8)
+        self.assertEqual((g["idx"], g["util"], g["mem_used"]), ("8", 5, None))
+
+
 if __name__ == "__main__":
     unittest.main()

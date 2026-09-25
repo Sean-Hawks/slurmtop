@@ -284,6 +284,26 @@ def main():
                                                  disk="971350180 487314376 448005680",
                                                  extra={"applegpu": IOREG_M3})})
 
+    # 14. AMD 節點（8 張 MI300X，amdgpu sysfs）：沒有 nvidia-smi。
+    #     job 950 分到 IDX 0-3 在跑；951 分到 IDX 4-5 卻沒在用
+    mi = []
+    for i in range(8):
+        busy = 93 if i < 4 else 0
+        mi.append("card%d %d %d %d %d %d %016x" % (i + 1, busy, (150 if i < 4 else 2) * 1024 ** 3,
+                                                   192 * 1024 ** 3, (68 if i < 4 else 38) * 1000,
+                                                   (650 if i < 4 else 140) * 10 ** 6, 0xabc0 + i))
+    write("amd", {**slurm_common(("m1",)), "hostname.txt": "m1\n",
+                  "sinfo.txt": sinfo([("m1", "mixed", "96/96/0/192")]),
+                  "squeue.txt": "\n".join([
+                      squeue_line(950, "rocm-train", "R", "2:00:00", "10:00:00", 1, 64,
+                                  "gres/gpu:mi300x:4", "m1", "12:00:00", "hawks"),
+                      squeue_line(951, "idle-nb", "R", "1:00:00", "3:00:00", 1, 32,
+                                  "gres/gpu:mi300x:2", "m1", "4:00:00", "chen")]) + "\n",
+                  "scontrol_jobs.txt": "\n".join([
+                      scontrol_job(950, "hawks", "RUNNING", [("m1", "gpu:mi300x:4(IDX:0-3)")]),
+                      scontrol_job(951, "chen", "RUNNING", [("m1", "gpu:mi300x:2(IDX:4-5)")])]) + "\n",
+                  "node/m1.txt": remote(ncpu=192, extra={"amdgpu": "\n".join(mi)})})
+
     # 9. 連續兩次取樣（CPU% 要兩筆 /proc/stat 才算得出來）
     write("seq", {"hostname.txt": "n1\n",
                   "node/n1.1.txt": remote(cpu="cpu  1000 0 500 8000 100 0 20 0 0 0",

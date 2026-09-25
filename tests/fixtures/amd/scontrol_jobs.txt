@@ -1,0 +1,2 @@
+JobId=950 JobName=job UserId=hawks(1001) GroupId=hawks(1001) Priority=1 JobState=RUNNING Reason=None NumNodes=1 TresPerNode=gres/gpu:8 Nodes=m1 CPU_IDs=0-31 Mem=0 GRES=gpu:mi300x:4(IDX:0-3)
+JobId=951 JobName=job UserId=chen(1001) GroupId=chen(1001) Priority=1 JobState=RUNNING Reason=None NumNodes=1 TresPerNode=gres/gpu:8 Nodes=m1 CPU_IDs=0-31 Mem=0 GRES=gpu:mi300x:2(IDX:4-5)

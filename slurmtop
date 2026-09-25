@@ -644,6 +644,18 @@ echo "$apps" | cut -d, -f2 | tr -d ' ' | sort -u | while read -r pid; do
   user=$(stat -c %U "/proc/$pid" 2>/dev/null || ps -o user= -p "$pid" 2>/dev/null)
   echo "$pid ${{job:--}} ${{user:--}}"
 done
+echo '@@amdgpu'
+# Linux 上 AMD 的卡（amdgpu 驅動）直接讀 sysfs，不用裝 rocm-smi。每張卡一行原始值：
+# 卡名 使用率% VRAM已用(bytes) VRAM總量(bytes) 溫度(毫°C) 功耗(微瓦) unique_id，讀不到的是 "-"
+rd() {{ v=$(cat "$1" 2>/dev/null); echo "${{v:--}}"; }}          # 讀不到或空檔都印 "-"
+for d in /sys/class/drm/card[0-9]*/device; do
+  case "$d" in */card*-*/device) continue ;; esac          # card0-DP-1 這類是接頭，不是卡
+  [ -r "$d/gpu_busy_percent" ] && [ "$(rd "$d/vendor")" = "0x1002" ] || continue
+  hw=$(ls -d "$d"/hwmon/hwmon* 2>/dev/null | head -n 1)
+  pw=$(rd "$hw/power1_average"); [ "$pw" = - ] && pw=$(rd "$hw/power1_input")
+  echo "$(basename "$(dirname "$d")") $(rd "$d/gpu_busy_percent") $(rd "$d/mem_info_vram_used")" \
+       "$(rd "$d/mem_info_vram_total") $(rd "$hw/temp1_input") $pw $(rd "$d/unique_id")"
+done
 echo '@@applegpu'
 # macOS 的 GPU（Apple Silicon、Intel Mac 的內顯／獨顯）：ioreg 不用 sudo 就讀得到使用率。
 # 每個加速器一段，以 "+-o" 開頭；解析在 parse_ioreg()。
@@ -1015,6 +1027,7 @@ def snapshot(node):
     d["gpus"] = [g for g in map(parse_gpu, parts[3].splitlines()) if g]
     d["procs"] = [p for p in map(parse_proc, parts[4].splitlines()) if p]
     link_procs(d["gpus"], d["procs"], parse_pidjobs(secs.get("jobs", "")))
+    d["gpus"] += parse_amdgpu(secs.get("amdgpu", ""), len(d["gpus"]))
     d["gpus"] += parse_ioreg(secs.get("applegpu", ""), d["mem_total"], len(d["gpus"]))
     d["disk"] = parse_disk(secs.get("disk", ""))
     d["net"] = None                              # (收, 送) bytes/s；第一次取樣還算不出來
@@ -1037,6 +1050,27 @@ def _gpu(idx, vendor, util=None, mem_used=None, mem_total=None, temp=None, power
     return {"idx": str(idx), "uuid": uuid, "util": util, "mem_used": mem_used,
             "mem_total": mem_total, "temp": temp, "power": power, "jobs": [], "users": [],
             "vendor": vendor, "model": model}
+
+
+def parse_amdgpu(text, start=0):
+    """REMOTE 的 amdgpu 段 -> GPU 清單。sysfs 的單位：bytes、毫°C、微瓦。
+
+    編號照 card0、card1… 的順序（跟 rocm-smi、Slurm 自動偵測的順序一般相同，
+    需在叢集上確認）。同一台同時有 NVIDIA 卡時接在後面編號。
+    """
+    def val(x, scale=1.0):
+        v = num(x)
+        return None if v is None else v / scale
+    gpus = []
+    for ln in (text or "").splitlines():
+        f = ln.split()
+        if len(f) < 6 or not f[0].startswith("card"):
+            continue
+        f += ["-"] * (7 - len(f))
+        uid = None if f[6] == "-" else "AMD-" + f[6]
+        gpus.append(_gpu(start + len(gpus), "amd", val(f[1]), val(f[2], 1048576),
+                         val(f[3], 1048576), val(f[4], 1000), val(f[5], 1e6), uuid=uid))
+    return gpus
 
 
 def parse_ioreg(text, mem_total_mib=None, start=0):

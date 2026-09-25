@@ -1,0 +1,1 @@
+NodeName=m1 Arch=x86_64 NodeHostName=m1 State=IDLE

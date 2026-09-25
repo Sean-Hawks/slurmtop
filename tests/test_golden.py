@@ -30,6 +30,7 @@ CASES = [
     ("many_dense", "many", ["--no-color"], 150, 45),
     ("full2x8_dense", "full2x8", ["--no-color", "--dense"], 120, 40),
     ("applesilicon", "applesilicon", ["--no-color", "--nodes", "m3"], 110, 30),
+    ("amd", "amd", ["--no-color", "--idle-samples", "1"], 110, 36),
     ("hang", "hang", ["--no-color", "--node-timeout", "0.3"], 150, 50),
     ("nogpu", "nogpu", ["--no-color", "--nodes", "mac,cpu1"], 100, 40),
     ("longq", "longq", ["--no-color"], 150, 50),
