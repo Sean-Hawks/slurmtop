@@ -16,7 +16,8 @@ NEW_ATTRS = {"removeprefix", "removesuffix", "bit_count", "randbytes", "to_threa
 NEW_MODULES = {"zoneinfo", "graphlib", "tomllib"}
 STDLIB = {"argparse", "concurrent", "getpass", "math", "os", "re", "shutil", "subprocess",
           "sys", "threading", "time", "collections", "unicodedata", "signal", "shlex",
-          "itertools", "functools", "json", "atexit", "platform", "socket", "errno"}
+          "itertools", "functools", "json", "atexit", "platform", "socket", "errno",
+          "ctypes", "http", "urllib", "csv", "io", "html", "statistics", "socketserver"}
 
 
 class Compat(unittest.TestCase):

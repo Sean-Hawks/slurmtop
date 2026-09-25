@@ -319,5 +319,118 @@ class PosixShells(unittest.TestCase):
         self.assertAlmostEqual(d["cpu_pct"], 100.0 * (100 - 0) / 200 * 1)   # 忙 100 / 總 200
 
 
+NETSTAT_E_EN = """\
+Interface Statistics
+
+                           Received            Sent
+
+Bytes                    3987654321       123456789
+Unicast packets             1234567          654321
+Non-unicast packets            4321             123
+"""
+
+NETSTAT_E_ZH = """\
+介面統計資料
+
+                           已接收              已傳送
+
+位元組                    3987654321       123456789
+單點傳播封包                 1234567          654321
+"""
+
+
+class Windows(unittest.TestCase):
+    """Windows 本機：ctypes 讀 CPU／記憶體、netstat -e 讀網路，排成 REMOTE 的格式。
+
+    這台是 macOS，Win32 API 的部分都用 mock 代替，需在 Windows 上實測。
+    """
+
+    def test_netstat_e(self):
+        m = load()
+        self.assertEqual(m.parse_netstat_e(NETSTAT_E_EN), (3987654321, 123456789))
+        self.assertEqual(m.parse_netstat_e(NETSTAT_E_ZH), (3987654321, 123456789))
+        self.assertIsNone(m.parse_netstat_e(""))
+
+    def test_sections_parse_like_remote(self):
+        import collections
+        m = load()
+        du = collections.namedtuple("du", "total used free")(512 * 1024 ** 3, 200 * 1024 ** 3,
+                                                            312 * 1024 ** 3)
+        gpu = "0, GPU-w, 35, 4096, 24576, 51, 120.5"
+        a = m.win_sections((1000, 500, 8500), 16, (32 * 1024 ** 3, 12 * 1024 ** 3), gpu, "",
+                           du, (1000, 2000))
+        b = m.win_sections((1600, 700, 8700), 16, (32 * 1024 ** 3, 12 * 1024 ** 3), gpu, "",
+                           du, (3000, 2500))
+        with mock.patch.object(m, "run_script", side_effect=[a, b]), \
+                mock.patch.object(m.time, "monotonic", side_effect=[10.0, 12.0]):
+            m.snapshot("win")
+            d = m.snapshot("win")
+        self.assertAlmostEqual(d["cpu_pct"], 100.0 * 800 / 1000)   # 忙 (600+200) / 總 1000
+        self.assertEqual((d["ncpu"], d["mem_total"], d["mem_used"]), (16, 32768, 12288))
+        self.assertAlmostEqual(d["disk"]["pct"], 100 * 200 / 512)
+        self.assertEqual(d["net"], (1000.0, 250.0))
+        self.assertEqual(d["gpus"][0]["util"], 35)
+
+    def test_local_windows_with_mocked_api(self):
+        m = load()
+        with mock.patch.object(m, "_win_cpu", return_value=(1, 2, 3)), \
+                mock.patch.object(m, "_win_mem", side_effect=OSError("no windll")), \
+                mock.patch.object(m.shutil, "which", return_value=None), \
+                mock.patch.object(m, "_run", return_value=NETSTAT_E_EN):
+            out = m.local_windows()
+        secs = m.sections(out)
+        self.assertEqual(secs["cpu"], "CPUTIME 1 0 2 0 3")
+        self.assertEqual(secs["mem"], "0 0")                     # 讀失敗也不能讓整台掛掉
+        self.assertEqual(secs["net"], "3987654321 123456789")
+        self.assertEqual(secs["gpu"], "")
+
+    def test_dispatch_and_ssh_args(self):
+        m = load()
+        with mock.patch.object(m.os, "name", "nt"), \
+                mock.patch.object(m, "local_windows", return_value="@@gpu\n") as lw:
+            self.assertEqual(m.run_script("localhost", m.REMOTE), "@@gpu\n")
+        lw.assert_called_once()
+        seen = []
+        getuid = os.getuid
+        try:
+            del os.getuid                                        # Windows 沒有 getuid
+            with mock.patch.object(m, "_run", side_effect=lambda argv, **kw: seen.append(argv) or ""), \
+                    mock.patch.object(m, "is_local", return_value=False):
+                m.run_script("gpu01", m.REMOTE)
+        finally:
+            os.getuid = getuid
+        self.assertEqual(seen[0][0], "ssh")
+        self.assertFalse(any("ControlMaster" in a for a in seen[0]))
+        self.assertEqual(seen[0][-2], "gpu01")
+
+    def test_hostname_on_windows(self):
+        m = load()
+        with mock.patch.object(m.os, "name", "nt"), \
+                mock.patch.object(m.socket, "gethostname", return_value="WORKSTATION.corp.local"), \
+                mock.patch.object(m, "sh") as sh:
+            self.assertEqual(m.local_host(), "WORKSTATION")
+        sh.assert_not_called()                               # 不能跑 "hostname -s"
+
+
+class PlainAscii(unittest.TestCase):
+    """輸出編碼畫不出方塊字（Windows 導向檔案、LANG=C）時不能掛掉，整個畫面改成 ASCII。"""
+
+    def test_ascii_stdout(self):
+        for args in (["--no-color"], [], ["--lang", "zh", "--no-color"], ["--dense", "--no-color"]):
+            with self.subTest(args):
+                p = run("full2x8", *args, PYTHONIOENCODING="ascii")
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertTrue(all(ord(c) < 128 for c in p.stdout))
+                self.assertIn("SLURMTOP", p.stdout)
+
+    def test_json_with_ascii_stdout(self):
+        p = run("full2x8", "--json", PYTHONIOENCODING="ascii")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        json.loads(p.stdout)
+
+    def test_utf8_untouched(self):
+        self.assertIn("╭", run("full2x8", "--no-color").stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

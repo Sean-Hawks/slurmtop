@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -61,6 +62,7 @@ def glyphs():
 TL, TR, BL, BR, H, V = "╭", "╮", "╰", "╯", "─", "│"
 
 _color = True
+_plain = False           # 輸出編碼連框線都畫不出來：整個畫面換成純 ASCII（見 can_draw_blocks）
 _flair = False           # --flair：邊框跑光、掃描光點、呼吸、閃爍、熱氣、開機動畫。預設全關
 _lang = "en"
 _title = "cluster"
@@ -579,7 +581,9 @@ _host = None
 def local_host():
     global _host
     if _host is None:
-        _host = sh("hostname -s").strip()
+        # Windows 的 hostname 不認得 -s（還會當成要改主機名稱），直接問 Python
+        _host = "" if os.name == "nt" else sh("hostname -s").strip()
+        _host = _host or socket.gethostname().split(".")[0]
     return _host
 
 
@@ -745,16 +749,98 @@ HARD_TIMEOUT = 30        # 一次取樣最多跑這麼久就砍掉；畫面不�
 def run_script(node, script, timeout=HARD_TIMEOUT):
     if _fx():
         return _fixture_node(node, timeout)
-    # ControlMaster：第一次連線後重複使用，省掉每次重畫的 SSH 握手
+    if os.name == "nt" and is_local(node):        # Windows 本機沒有 sh，改用 Python 直接讀
+        return local_windows(timeout)
     # REMOTE 只用 POSIX sh 的語法；有 bash 就用 bash，沒有（FreeBSD、精簡的容器）就用 sh。
     # 包在 sh -c 裡，對方的登入 shell 是 csh 或 fish 也照樣能跑。
-    argv = ["sh", "-c", SHELL_PICK] if is_local(node) else [
-        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4",
-        "-o", "ControlMaster=auto",
-        "-o", f"ControlPath=/tmp/.slurmtop-{os.getuid()}-%r@%h:%p",
-        "-o", "ControlPersist=120",
-        node, "sh -c '%s'" % SHELL_PICK]
-    return _run(argv, stdin=script, timeout=timeout)
+    if is_local(node):
+        return _run(["sh", "-c", SHELL_PICK], stdin=script, timeout=timeout)
+    argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4"]
+    if hasattr(os, "getuid"):
+        # ControlMaster：第一次連線後重複使用，省掉每次重畫的 SSH 握手。
+        # Windows 的 OpenSSH 不支援（要 Unix socket），就每次重新連線。
+        argv += ["-o", "ControlMaster=auto",
+                 "-o", f"ControlPath=/tmp/.slurmtop-{os.getuid()}-%r@%h:%p",
+                 "-o", "ControlPersist=120"]
+    return _run(argv + [node, "sh -c '%s'" % SHELL_PICK], stdin=script, timeout=timeout)
+
+
+# --- Windows 本機 ---------------------------------------------------------------
+# 沒有 sh、沒有 /proc，用 ctypes 呼叫 Win32 API，組出跟 REMOTE 一樣的段落文字，
+# 後面的解析完全共用。遠端節點照樣走 ssh（Windows 10 以後內建 OpenSSH 用戶端）。
+
+def win_sections(cpu, ncpu, mem, gpu="", proc="", disk=None, net=None):
+    """把 Windows 讀到的數字排成 REMOTE 的格式。
+
+    cpu = (user, sys, idle) 累計時間；mem = (總量, 已用) bytes；disk = shutil.disk_usage()；
+    net = (收, 送) 累計 bytes。沒有 load average，送 0。
+    """
+    out = ["@@cpu"]
+    if cpu:
+        out.append("CPUTIME %d 0 %d 0 %d" % cpu)
+    out += ["@@load", "0 0 0", str(ncpu or 0), "@@mem"]
+    out.append("%d %d" % (mem[0] // 1048576, mem[1] // 1048576) if mem else "0 0")
+    out += ["@@gpu", gpu.strip(), "@@proc", proc.strip(), "@@jobs", "@@disk"]
+    if disk:
+        out.append("%d %d %d" % (disk.total // 1024, disk.used // 1024, disk.free // 1024))
+    out.append("@@net")
+    if net:
+        out.append("%d %d" % net)
+    return "\n".join(out) + "\n"
+
+
+def parse_netstat_e(text):
+    """Windows 的 netstat -e：第一個有兩個數字的資料列就是 bytes（標題會翻譯成當地語言，
+    例如「位元組」，所以不看文字只看位置）。"""
+    for ln in (text or "").splitlines():
+        m = re.match(r"^\s*\S.*?\s+(\d+)\s+(\d+)\s*$", ln)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def _win_cpu():
+    import ctypes
+    from ctypes import wintypes
+    idle, kern, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+    if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kern),
+                                                 ctypes.byref(user)):
+        return None
+    v = lambda ft: (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+    return v(user), v(kern) - v(idle), v(idle)     # kernel 時間裡包含 idle，要扣掉
+
+
+def _win_mem():
+    import ctypes
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)] + \
+                   [(n, ctypes.c_ulonglong) for n in (
+                       "ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
+                       "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")]
+    st = MEMORYSTATUSEX()
+    st.dwLength = ctypes.sizeof(st)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+        return None
+    return st.ullTotalPhys, st.ullTotalPhys - st.ullAvailPhys
+
+
+def local_windows(timeout=HARD_TIMEOUT):
+    def safe(fn, *a):
+        try:
+            return fn(*a)
+        except Exception:
+            return None
+    gpu = proc = ""
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        gpu = _run([smi, "--query-gpu=" + GPU_Q, "--format=csv,noheader,nounits"], timeout=timeout)
+        proc = _run([smi, "--query-compute-apps=" + PROC_Q, "--format=csv,noheader,nounits"],
+                    timeout=timeout)
+    drive = os.environ.get("SystemDrive", "C:") + "\\"
+    return win_sections(safe(_win_cpu), os.cpu_count(), safe(_win_mem), gpu, proc,
+                        safe(shutil.disk_usage, drive),
+                        parse_netstat_e(_run(["netstat", "-e"], timeout=timeout)))
 
 
 NODE_TIMEOUT = 6.0       # 每次刷新最多等每台節點幾秒（--node-timeout）
@@ -2328,6 +2414,50 @@ def options(**kw):
     return opt
 
 
+# 編碼畫不出來時，框線和符號換成的 ASCII
+PLAIN = str.maketrans({
+    "─": "-", "━": "=", "┈": "-", "│": "|", "╭": "+", "╮": "+", "╰": "+", "╯": "+",
+    "┤": "|", "├": "|", "◤": "/", "◥": "\\", "⌜": "+", "⌝": "+", "⌞": "+", "⌟": "+",
+    "·": ".", "◉": "o", "●": "*", "◌": ".", "○": "o", "◐": "|", "◓": "/", "◑": "-", "◒": "\\",
+    "▲": "^", "▼": "v", "◆": "*", "⚠": "!", "↓": "v", "↑": "^", "…": "...", "°": "",
+    "▉": "#", "█": "#", "░": ".", "▕": "[", "▏": "]", "≋": "~", "≈": "~",
+    "▁": "_", "▂": "_", "▃": "-", "▄": "-", "▅": "=", "▆": "=", "▇": "#", "▀": "#",
+})
+
+
+def can_draw_blocks(stream=None):
+    """輸出的編碼畫不出方塊字（Windows 導向到檔案時的 cp1252、LANG=C 的舊系統…）就改用 ASCII，
+    其他畫不出來的字（°、中文）換成 ?，不要整個程式因為 UnicodeEncodeError 掛掉。"""
+    stream = stream or sys.stdout
+    enc = getattr(stream, "encoding", None) or "ascii"
+    try:
+        "█▁◉─╭°".encode(enc)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+        return False
+
+
+def out_text(s):
+    return s.translate(PLAIN) if _plain else s
+
+
+def enable_windows_ansi():
+    """Windows 10 以後的主控台要先開 VT 模式才看得懂 ANSI 色碼。"""
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        h = k32.GetStdHandle(-11)                   # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if k32.GetConsoleMode(h, ctypes.byref(mode)):
+            k32.SetConsoleMode(h, mode.value | 0x0004)   # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        pass
+
+
 def _exit_on_signal(signum, _frame):
     raise SystemExit(128 + signum)
 
@@ -2343,7 +2473,11 @@ def main():
     global _color, _lang, _title, _ascii, _flair
     if args.no_color:
         _color = False
-    _ascii = args.ascii
+    global _plain
+    _plain = not can_draw_blocks()
+    _ascii = args.ascii or _plain
+    if os.name == "nt" and _color:
+        enable_windows_ansi()
     _flair = args.flair
     if args.lang:
         _lang = args.lang
@@ -2365,7 +2499,7 @@ def main():
         print(json.dumps(model(sample(nodes, args), args), ensure_ascii=False, indent=1))
         return
     if args.once:
-        print(render(nodes, args))
+        print(out_text(render(nodes, args)))
         return
     try:
         # 1049h = 切到備用畫面緩衝區，25l = 藏游標。
@@ -2374,8 +2508,7 @@ def main():
         if want_splash(args):
             splash(nodes)
         while True:
-            sys.stdout.write("\033[H\033[J"
-                             + render(nodes, args))
+            sys.stdout.write("\033[H\033[J" + out_text(render(nodes, args)))
             sys.stdout.flush()
             time.sleep(args.interval)
     except KeyboardInterrupt:
