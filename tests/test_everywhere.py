@@ -710,5 +710,66 @@ class WithoutSlurm(unittest.TestCase):
         self.assertIn("SCAN", p.stdout)
 
 
+class ReportRobustness(unittest.TestCase):
+    """第二次審查找到的 --report 問題：中斷、訊號、寫不進去的檔案、耗電跨過斷線。"""
+
+    def popen(self, scenario, *args):
+        import subprocess, sys
+        from tests.helpers import SCRIPT, env
+        e = env(scenario, 150, 40)
+        e["SLURMTOP_FAKE_NOW"] = ""
+        return subprocess.Popen([sys.executable, SCRIPT, *args], env=e, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+
+    def test_ctrl_c_before_first_sample(self):
+        import signal, time
+        p = self.popen("hang", "--report", "30", "--node-timeout", "3")
+        time.sleep(1)
+        p.send_signal(signal.SIGINT)
+        out, err = p.communicate(timeout=20)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(p.returncode, 0, err)
+        self.assertIn("n1 G0", out)                            # 中斷後補取一筆，照樣出報告
+
+    def test_second_ctrl_c_kills_stubborn_child(self):
+        import signal, subprocess, time, uuid
+        marker = "stubborn-%s" % uuid.uuid4().hex[:8]
+        p = self.popen("full2x8", "--report", "-n", "0.2", "--", "sh", "-c",
+                       "trap '' INT TERM; exec -a %s sleep 30" % marker)
+        time.sleep(1)
+        p.send_signal(signal.SIGINT)
+        time.sleep(0.5)
+        p.send_signal(signal.SIGINT)
+        out, err = p.communicate(timeout=20)
+        self.assertNotIn("Traceback", err)
+        time.sleep(0.3)
+        left = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True).stdout
+        self.assertEqual(left.strip(), "", "child left running")
+
+    def test_signal_exit_code(self):
+        p = run("full2x8", "--report", "-n", "0.2", "--", "sh", "-c", "kill -TERM $$",
+                SLURMTOP_FAKE_NOW="")
+        self.assertEqual(p.returncode, 143)                    # 跟 shell 一樣：128 + 15
+        self.assertIn("killed by signal 15", p.stdout)
+
+    def test_bad_output_paths_fail_before_running(self):
+        import tempfile
+        marker = tempfile.mktemp()
+        for flag in ("--log", "--html"):
+            with self.subTest(flag):
+                p = run("full2x8", "--report", flag, "/nonexistent/dir/x", "--", "touch", marker)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertNotIn("Traceback", p.stderr)
+                self.assertIn("/nonexistent/dir/x", p.stderr)
+                self.assertFalse(os.path.exists(marker), "command ran anyway")
+
+    def test_energy_not_bridged_across_gaps(self):
+        m = load()
+        s = [_m(0, 50, 100), _m(10, 50, 100), _m(20, 50, 100), _m(1000, 50, 100), _m(1010, 50, 100)]
+        r = m.summarize(s)
+        # 步距是 (1010-0)/4 ≈ 252 秒，990 秒的空檔超過 2.5 倍，不算進去
+        self.assertEqual(r["gpus"][0]["energy_wh"], round((100 * 10 * 3) / 3600, 2))
+
+
 if __name__ == "__main__":
     unittest.main()

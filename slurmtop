@@ -94,6 +94,7 @@ STRINGS = {
         "r_power": "avg power", "r_energy": "energy", "r_idle": "held idle", "r_node": "node",
         "r_cluster_avg": "cluster GPU average", "r_energy_total": "GPU energy",
         "r_progress": "recording ... %d samples", "r_saved": "report written to %s",
+        "r_signal": "killed by signal %d", "r_empty": "no samples were recorded",
     },
     "zh": {
         "busy": "忙", "queue": "Slurm 佇列", "no_jobs": "（目前沒有 job）",
@@ -120,6 +121,7 @@ STRINGS = {
         "r_power": "平均功耗", "r_energy": "耗電", "r_idle": "佔著閒置", "r_node": "節點",
         "r_cluster_avg": "叢集 GPU 平均", "r_energy_total": "GPU 總耗電",
         "r_progress": "記錄中…已取樣 %d 次", "r_saved": "報告存到 %s",
+        "r_signal": "被訊號 %d 終止", "r_empty": "一筆資料都沒錄到",
     },
 }
 
@@ -2856,7 +2858,10 @@ def summarize(samples, command=None, exit_code=None):
     for (node, idx), d in sorted(gpus.items(), key=lambda kv: (kv[0][0], _natkey(kv[0][1]))):
         u = [x for x in d["util"] if x is not None]
         pw = [(t, p) for t, p in zip(d["t"], d["power"]) if p is not None]
-        wh = sum((b[0] - a[0]) * (a[1] + b[1]) / 2 for a, b in zip(pw, pw[1:])) / 3600.0
+        # 梯形法積分；中間斷掉太久（節點連不上、讀不到功耗）的那段不補，不然會憑空算進耗電
+        gap = step * 2.5 if step else float("inf")
+        wh = sum((b[0] - a[0]) * (a[1] + b[1]) / 2 for a, b in zip(pw, pw[1:])
+                 if b[0] - a[0] <= gap) / 3600.0
         energy_total += wh
         known = lambda k: [x for x in d[k] if x is not None]
         out_g.append({
@@ -2888,6 +2893,13 @@ def summarize(samples, command=None, exit_code=None):
     }
 
 
+def exit_text(code):
+    """-15 -> 'killed by signal 15'；0 -> 'exit 0'。"""
+    if code is not None and code < 0:
+        return T("r_signal") % -code
+    return "exit %s" % code
+
+
 def fmt_secs(sec):
     """秒數 -> 跟佇列一樣的寫法（45s、2m30s、1h05m）；0 或沒有就是 "-"。"""
     if not sec:
@@ -2907,8 +2919,8 @@ def report_text(r):
         T("r_title"), r["cluster"], when(r["start"]), when(r["end"])[11:], r["seconds"],
         r["samples"], T("r_samples"))]
     if r["command"]:
-        out.append("%s: %s  (exit %s)" % (T("r_command"), " ".join(map(shlex.quote, r["command"])),
-                                            r["exit_code"]))
+        out.append("%s: %s  (%s)" % (T("r_command"), " ".join(map(shlex.quote, r["command"])),
+                                       exit_text(r["exit_code"])))
     out.append("")
     if r["gpus"]:
         head = ("GPU", T("r_avg"), "p95", T("r_max"), T("r_busy"), T("r_mem"), T("r_temp"),
@@ -2973,9 +2985,9 @@ def report_html(r):
         esc(time.strftime("%H:%M:%S", time.localtime(r["end"]))), r["seconds"], r["samples"],
         esc(T("r_samples"))))
     if r["command"]:
-        parts.append("<p><b>%s</b> <code>%s</code> (exit %s)</p>"
+        parts.append("<p><b>%s</b> <code>%s</code> (%s)</p>"
                      % (esc(T("r_command")), esc(" ".join(map(shlex.quote, r["command"]))),
-                        esc(r["exit_code"])))
+                        esc(exit_text(r["exit_code"]))))
     if r["gpus"]:
         parts.append("<div class='tiles'><div><span>%s</span><b>%s</b></div><div><span>%s</span><b>%s</b></div></div>"
                      % (esc(T("r_cluster_avg")), esc(fnum(r["gpu_util_avg"], "%.1f%%").strip()),
@@ -3031,20 +3043,46 @@ table { border-collapse:collapse; width:100%; } th, td { text-align:right; paddi
 """
 
 
+def _finish(proc, interrupted):
+    """等包起來的指令結束。被中斷時先 terminate，5 秒內不走就 kill；等待中再按一次
+    Ctrl-C 也直接 kill，不要留下孤兒行程。"""
+    try:
+        if interrupted:
+            proc.terminate()
+            return proc.wait(timeout=5)
+        return proc.wait()
+    except (subprocess.TimeoutExpired, KeyboardInterrupt):
+        proc.kill()
+        return proc.wait()
+
+
+def shell_status(code):
+    """Popen 的結束碼轉成 shell 的慣例：被訊號 N 殺掉是 128+N。"""
+    if code is None:
+        return 0
+    return 128 - code if code < 0 else code
+
+
 def run_report(nodes, opt):
     """--report：取樣一段時間（或跑完一個指令），最後印出摘要。回傳結束碼。"""
     command = list(opt.command or [])
     if command[:1] == ["--"]:                     # 只拿掉開頭那個分隔用的 --，指令自己的參數不動
         command = command[1:]
     command = command or None
-    samples, proc, code = [], None, None
+    # 輸出檔先確認寫得進去：不要等指令跑起來、甚至整段錄完才發現路徑不對
+    try:
+        if opt.html:
+            open(opt.html, "a", encoding="utf-8").close()
+        log = CsvLog(opt.log) if opt.log else None
+    except OSError as e:
+        sys.exit("slurmtop: %s" % e)
+    samples, proc, code, interrupted = [], None, None, False
     if command:
         try:
             proc = subprocess.Popen(command)
         except OSError as e:
             sys.exit("slurmtop: cannot run %s: %s" % (command[0], e))
     end = time.monotonic() + (opt.report or 0)
-    log = CsvLog(opt.log) if opt.log else None
     try:
         while True:
             t0 = time.monotonic()
@@ -3069,26 +3107,35 @@ def run_report(nodes, opt):
             else:
                 time.sleep(min(wait, max(0.0, end - time.monotonic())))
     except KeyboardInterrupt:                     # Ctrl-C：用已經收集到的資料出報告
-        if proc is not None:
-            proc.terminate()
+        interrupted = True
     finally:
         if log:
             log.close()
     if sys.stderr.isatty():
         sys.stderr.write("\n")
     if proc is not None:
-        code = proc.wait()
-        samples.append(model(sample(nodes, opt), opt))   # 指令結束後再取一筆，時間算到結束
+        code = _finish(proc, interrupted)
+    if proc is not None and not interrupted or not samples:
+        try:                                      # 指令結束後再取一筆，時間算到結束
+            samples.append(model(sample(nodes, opt), opt))
+        except KeyboardInterrupt:
+            pass
+    if not samples:
+        sys.stderr.write("slurmtop: " + T("r_empty") + "\n")
+        return shell_status(code) or 130
     r = summarize(samples, command, code)
     if opt.json:
-        print(json.dumps(r, ensure_ascii=False, indent=1))
+        print(json.dumps(r, ensure_ascii=_plain, indent=1))
     else:
         print(out_text(report_text(r)))
     if opt.html:
-        with open(opt.html, "w", encoding="utf-8") as f:
-            f.write(report_html(r))
-        sys.stderr.write(T("r_saved") % opt.html + "\n")
-    return code or 0
+        try:
+            with open(opt.html, "w", encoding="utf-8") as f:
+                f.write(report_html(r))
+            sys.stderr.write(T("r_saved") % opt.html + "\n")
+        except OSError as e:                      # 寫不進去也要照指令的結束碼離開
+            sys.stderr.write("slurmtop: %s\n" % e)
+    return shell_status(code)
 
 
 def parse_args(argv=None):
