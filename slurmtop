@@ -28,6 +28,7 @@ __credits__ = "team-03/Hawks"
 import argparse
 import atexit
 import getpass
+import json
 import math
 import os
 import re
@@ -1770,15 +1771,11 @@ def only_mine(nodes, snaps, ages, me):
     return keep
 
 
-def render(nodes, opt=None, **kw):
-    """取樣、更新狀態、畫一整個畫面。opt 是 parse_args() 的結果；測試可以只給 kw。"""
-    opt = opt or options(**kw)
-    show_proc, force_stack, fit, want_qr = opt.proc, opt.stack, opt.fit, opt.qr_panel
-    size = shutil.get_terminal_size((120, 45))
-    cols, lines = size.columns, size.lines
-    sparks = cols >= 118
-    global _tick
-    _tick += 1
+def sample(nodes, opt):
+    """取樣一次並更新狀態（歷史、GPU 歸屬、閒置計數），回傳這次刷新的資料。
+
+    終端機畫面、--json、網頁、Prometheus、--report 都用這一份，所以一次刷新只取樣一次。
+    """
     # 各節點和 Slurm 同時抓，每個最多等 --node-timeout 秒；卡住的沿用上一筆
     jobs = {("node", n): (snapshot, n) for n in nodes}
     jobs[("slurm",)] = (slurm_query, None)
@@ -1791,6 +1788,22 @@ def render(nodes, opt=None, **kw):
     slurm_data, slurm_age = got[("slurm",)]
     slurm_data = slurm_data or ("", "", "")
     update_state(nodes, snaps, ages, slurm_data, opt.idle_samples)
+    return {"nodes": list(nodes), "snaps": snaps, "ages": ages, "slurm": slurm_data,
+            "slurm_age": slurm_age, "time": _now()}
+
+
+def render(nodes, opt=None, sampled=None, **kw):
+    """取樣（或用現成的 sampled）並畫一整個畫面。opt 是 parse_args() 的結果；測試可以只給 kw。"""
+    opt = opt or options(**kw)
+    show_proc, force_stack, fit, want_qr = opt.proc, opt.stack, opt.fit, opt.qr_panel
+    size = shutil.get_terminal_size((120, 45))
+    cols, lines = size.columns, size.lines
+    sparks = cols >= 118
+    global _tick
+    _tick += 1
+    sm = sampled or sample(nodes, opt)
+    nodes, snaps, ages = sm["nodes"], sm["snaps"], sm["ages"]
+    slurm_data, slurm_age = sm["slurm"], sm["slurm_age"]
     head_snaps = snaps
     me = my_user() if opt.me else None
     if me:                                  # --me：只留自己佔用的 GPU 和自己的 job
@@ -1838,6 +1851,80 @@ def render(nodes, opt=None, **kw):
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
+
+
+JSON_HISTORY = 120      # --json／網頁每條歷史最多帶幾筆
+
+
+def _r(v, nd=1):
+    return None if v is None else round(v, nd)
+
+
+def model(sm, opt=None):
+    """把 sample() 的結果整理成純資料（可以直接 json.dumps），給 --json、網頁、報告用。
+
+    數值一律用原始單位：記憶體 MiB、功耗 W、溫度 °C、磁碟 bytes、網速 bytes/s。
+    讀不到的值是 null。--me 的篩選在這裡也一樣套用。
+    """
+    nodes, snaps, ages = sm["nodes"], sm["snaps"], sm["ages"]
+    queue = parse_queue(sm["slurm"][0])
+    me = my_user() if opt is not None and getattr(opt, "me", False) else None
+    all_gpus = [g for d in snaps if d for g in d["gpus"]]
+    live = [d for d in snaps if d]
+    st = gpu_stats(all_gpus)
+    summary = {
+        "nodes": len(nodes), "nodes_up": len(live), "gpus": st["n"], "gpus_busy": st["busy"],
+        "gpu_util": _r(st["util"]), "power_w": _r(st["power"]), "gpu_temp_max": _r(st["tmax"], 0),
+        "vram_used_mib": _r(st["vram_u"] * 1024, 0), "vram_total_mib": _r(st["vram_t"] * 1024, 0),
+        "cpu_pct": _r(sum(d["cpu_pct"] for d in live) / len(live)) if live else None,
+        "mem_used_mib": sum(d["mem_used"] for d in live),
+        "mem_total_mib": sum(d["mem_total"] for d in live),
+    }
+    if me:
+        nodes, snaps, ages = only_mine(nodes, snaps, ages, me)
+        queue = [f for f in queue if len(f) > 10 and f[10] == me]
+    out_nodes = []
+    for node, d, age in zip(nodes, snaps, ages):
+        n = {"name": node, "up": bool(d), "stale_s": _r(age, 0)}
+        if d:
+            gpus = []
+            for g in d["gpus"]:
+                jid, user = gpu_owner(node, g)
+                gpus.append({
+                    "index": g["idx"], "uuid": g.get("uuid"), "vendor": g.get("vendor", "nvidia"),
+                    "model": g.get("model"), "util": _r(g["util"]),
+                    "mem_used_mib": _r(g["mem_used"], 0), "mem_total_mib": _r(g["mem_total"], 0),
+                    "temp_c": _r(g["temp"], 0), "power_w": _r(g["power"]),
+                    "job": jid, "user": user, "idle_held": idle_held(node, g),
+                    "history": [_r(x) for x in list(hist((node, "g" + g["idx"])))[-JSON_HISTORY:]],
+                })
+            disk, net = d.get("disk"), d.get("net")
+            n.update({
+                "local": is_local(node), "cpu_pct": _r(d["cpu_pct"]), "load": d["load"],
+                "cpus": d["ncpu"], "mem_used_mib": d["mem_used"], "mem_total_mib": d["mem_total"],
+                "disk": ({"pct": _r(disk["pct"]), "used": int(disk["used"]),
+                          "total": int(disk["total"])}
+                         if disk else None),
+                "net": {"rx": _r(net[0], 0), "tx": _r(net[1], 0)} if net else None,
+                "gpus": gpus,
+                "history": {k: [_r(x) for x in list(hist((node, k)))[-JSON_HISTORY:]]
+                            for k in ("cpu", "gpu")},
+            })
+        out_nodes.append(n)
+    keys = ("id", "name", "state", "elapsed", "left", "nodes", "cpus", "gres", "where",
+            "limit", "user", "job_id")
+    jobs = []
+    for f in queue:
+        j = dict(zip(keys, f))
+        j["gpus"] = gpu_count(j.get("gres"))
+        jobs.append(j)
+    return {
+        "version": __version__, "time": sm["time"], "cluster": _title, "summary": summary,
+        "nodes": out_nodes, "queue": jobs, "queue_stale_s": _r(sm["slurm_age"], 0),
+        "alerts": [{"level": "red" if c == RED else "warn", "text": t}
+                   for c, t in alerts(nodes, snaps, ages)],
+        "history": [_r(x) for x in list(hist(("all", "gpu")))[-JSON_HISTORY:]],
+    }
 
 
 def scope_section(width, height=6):
@@ -2032,6 +2119,8 @@ def parse_args(argv=None):
     ap.add_argument("-n", "--interval", type=float, default=2.0,
                     help="refresh interval in seconds (default: 2)")
     ap.add_argument("--once", action="store_true", help="print one frame and exit")
+    ap.add_argument("--json", action="store_true",
+                    help="print one sample as JSON and exit (for scripts and other tools)")
     ap.add_argument("--nodes", help="comma-separated node list (default: discover from Slurm)")
     ap.add_argument("--ssh-config", nargs="?", const="~/.ssh/config", metavar="PATH",
                     help="watch every Host in an ssh config file (default path: "
@@ -2131,6 +2220,11 @@ def main():
     if not nodes:
         sys.exit("no nodes found - pass --nodes host1,host2 or --ssh-config")
 
+    if args.json:                           # 一次取樣、印 JSON 就結束，給腳本和其他工具用
+        if args.node_timeout is None:
+            args.node_timeout = ONCE_TIMEOUT
+        print(json.dumps(model(sample(nodes, args), args), ensure_ascii=False, indent=1))
+        return
     if args.once:
         print(render(nodes, args))
         return
