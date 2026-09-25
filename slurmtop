@@ -1205,10 +1205,10 @@ def snapshot(node):
     d["gpus"] = [g for g in map(parse_gpu, parts[3].splitlines()) if g]
     d["procs"] = [p for p in map(parse_proc, parts[4].splitlines()) if p]
     link_procs(d["gpus"], d["procs"], parse_pidjobs(secs.get("jobs", "")))
-    d["gpus"] += parse_amdgpu(secs.get("amdgpu", ""), len(d["gpus"]))
+    d["gpus"] += parse_amdgpu(secs.get("amdgpu", ""), next_index(d["gpus"]))
     if not d["gpus"]:                  # 新版 JetPack 有 nvidia-smi；讀得到就不重複算
         d["gpus"] += parse_jetson(secs.get("jetson", ""), d["mem_total"], d["mem_used"])
-    d["gpus"] += parse_ioreg(secs.get("applegpu", ""), d["mem_total"], len(d["gpus"]))
+    d["gpus"] += parse_ioreg(secs.get("applegpu", ""), d["mem_total"], next_index(d["gpus"]))
     d["disk"] = parse_disk(secs.get("disk", ""))
     d["net"] = None                              # (收, 送) bytes/s；第一次取樣還算不出來
     cur = parse_net(secs.get("net", ""))
@@ -1222,6 +1222,12 @@ def snapshot(node):
 
 
 _net_prev = {}                                   # 節點 -> ((收, 送) 累計 bytes, 取樣時間)
+
+
+def next_index(gpus):
+    """其他廠牌的卡接在已有編號的後面。用最大編號 + 1 而不是張數：nvidia-smi 有列
+    讀不出來（Unknown Error）被丟掉時，張數會跟已用過的編號撞在一起。"""
+    return max([int(g["idx"]) for g in gpus if g["idx"].isdigit()] or [-1]) + 1
 
 
 def _gpu(idx, vendor, util=None, mem_used=None, mem_total=None, temp=None, power=None,
@@ -1241,11 +1247,12 @@ def parse_amdgpu(text, start=0):
     def val(x, scale=1.0):
         v = num(x)
         return None if v is None else v / scale
+    lines = [ln.split() for ln in (text or "").splitlines()]
+    lines = [f for f in lines if len(f) >= 6 and re.match(r"^card\d+$", f[0])]
+    # shell 的 glob 照字串排序（card1 card10 card2），要照卡號排回來，編號才對得上 Slurm
+    lines.sort(key=lambda f: int(f[0][4:]))
     gpus = []
-    for ln in (text or "").splitlines():
-        f = ln.split()
-        if len(f) < 6 or not f[0].startswith("card"):
-            continue
+    for f in lines:
         f += ["-"] * (7 - len(f))
         uid = None if f[6] == "-" else "AMD-" + f[6]
         gpus.append(_gpu(start + len(gpus), "amd", val(f[1]), val(f[2], 1048576),
@@ -3336,7 +3343,7 @@ def main():
     global _plain
     _plain = not can_draw_blocks()
     _ascii = args.ascii or _plain
-    if os.name == "nt" and _color:
+    if os.name == "nt":                       # --no-color 也要：切換畫面、清畫面同樣用控制碼
         enable_windows_ansi()
     _flair = args.flair
     if args.lang:
@@ -3364,7 +3371,8 @@ def main():
     if args.json:                           # 一次取樣、印 JSON 就結束，給腳本和其他工具用
         if args.node_timeout is None:
             args.node_timeout = ONCE_TIMEOUT
-        print(json.dumps(model(sample(nodes, args), args), ensure_ascii=False, indent=1))
+        # 輸出編碼畫不出中文等字時改用 \uXXXX，不要讓使用者、job 名稱變成 ?
+        print(json.dumps(model(sample(nodes, args), args), ensure_ascii=_plain, indent=1))
         return
     if args.once:
         print(out_text(render(nodes, args)))

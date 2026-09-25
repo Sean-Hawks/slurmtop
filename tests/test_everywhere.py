@@ -841,5 +841,41 @@ class SlurmDown(unittest.TestCase):
             self.assertTrue(m.slurm_present())
 
 
+class SmallFixes(unittest.TestCase):
+    def test_amd_card_order(self):
+        """16 張卡時 glob 會排成 card0 card1 card10 … card2，編號要照卡號。"""
+        m = load()
+        lines = ["card%d %d 0 1 1 1 u%d" % (i, i, i) for i in sorted(range(16), key=str)]
+        gpus = m.parse_amdgpu("\n".join(lines))
+        self.assertEqual([g["util"] for g in gpus], list(range(16)))
+        self.assertEqual([g["idx"] for g in gpus], [str(i) for i in range(16)])
+
+    def test_index_after_dropped_nvidia_row(self):
+        m = load()
+        out = ("@@cpu\nPCT 5\n@@load\n1 1 1\n8\n@@mem\n100 50\n@@gpu\n"
+               "0, GPU-a, 5, 1, 2, 40, 10\n"
+               "Unable to determine the device handle for GPU 0000:3B:00.0: Unknown Error\n"
+               "2, GPU-c, 5, 1, 2, 40, 10\n@@proc\n"
+               "@@amdgpu\ncard0 5 0 1 1 1 -\n")
+        with mock.patch.object(m, "run_script", return_value=out):
+            d = m.snapshot("x")
+        idx = [g["idx"] for g in d["gpus"]]
+        self.assertEqual(len(idx), len(set(idx)), idx)            # 編號不能重複
+        self.assertEqual(idx[-1], "3")
+
+    def test_json_non_latin_with_ascii_stdout(self):
+        import tempfile, shutil
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        d = os.path.join(tmp, "f")
+        shutil.copytree(os.path.join(FIXTURES, "full2x8"), d)
+        with open(os.path.join(d, "squeue.txt"), encoding="utf-8") as f:
+            q = f.read().replace("hawks-mxp16", "訓練模型")
+        with open(os.path.join(d, "squeue.txt"), "w", encoding="utf-8") as f:
+            f.write(q)
+        p = run(None, "--json", SLURMTOP_FIXTURES=d, PYTHONIOENCODING="ascii")
+        self.assertEqual(json.loads(p.stdout)["queue"][0]["name"], "訓練模型")
+
+
 if __name__ == "__main__":
     unittest.main()
