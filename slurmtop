@@ -549,7 +549,9 @@ def sh(cmd, timeout=12, key=None, strict=False):
     """
     if _fx():
         key = key or cmd.split()[0]
-        if strict and os.path.exists(os.path.join(_fx(), key + ".fail")):
+        # strict：有 <key>.fail，或根本沒有這個檔（= 這台沒裝這個指令）都算失敗
+        if strict and (os.path.exists(os.path.join(_fx(), key + ".fail"))
+                       or not os.path.exists(os.path.join(_fx(), key + ".txt"))):
             return None
         return _fixture(key + ".txt")
     return _run(cmd, timeout=timeout, shell=True, strict=strict)
@@ -2046,10 +2048,11 @@ def sample(nodes, opt):
     snaps = [got[("node", n)][0] for n in nodes]
     ages = [got[("node", n)][1] for n in nodes]
     slurm_data, slurm_age = got[("slurm",)]
+    slurm_ok = slurm_data is not None          # 沒裝 Slurm（或控制器一直連不上）就不顯示佇列
     slurm_data = slurm_data or ("", "", "")
     update_state(nodes, snaps, ages, slurm_data, opt.idle_samples)
     return {"nodes": list(nodes), "snaps": snaps, "ages": ages, "slurm": slurm_data,
-            "slurm_age": slurm_age, "time": _now()}
+            "slurm_age": slurm_age, "slurm_ok": slurm_ok, "time": _now()}
 
 
 def render(nodes, opt=None, sampled=None, **kw):
@@ -2064,6 +2067,7 @@ def render(nodes, opt=None, sampled=None, **kw):
     sm = sampled or sample(nodes, opt)
     nodes, snaps, ages = sm["nodes"], sm["snaps"], sm["ages"]
     slurm_data, slurm_age = sm["slurm"], sm["slurm_age"]
+    slurm_ok = sm.get("slurm_ok", True)
     head_snaps = snaps
     me = my_user() if opt.me else None
     if me:                                  # --me：只留自己佔用的 GPU 和自己的 job
@@ -2082,7 +2086,7 @@ def render(nodes, opt=None, sampled=None, **kw):
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr, ages=ages,
                               me=me, head_snaps=head_snaps, dense=dense,
-                              slurm_age=slurm_age)
+                              slurm_age=slurm_age, slurm_ok=slurm_ok)
             if best is None or len(frame) < len(best[0]):
                 best = (frame, jcols)
             if len(frame) <= lines:
@@ -2094,7 +2098,7 @@ def render(nodes, opt=None, sampled=None, **kw):
                               sparks, compact=False, job_cols=jcols,
                               slurm_data=slurm_data, want_qr=want_qr,
                               scope_h=6 + spare, ages=ages, me=me, head_snaps=head_snaps,
-                              dense=dense, slurm_age=slurm_age)
+                              dense=dense, slurm_age=slurm_age, slurm_ok=slurm_ok)
         return "\n".join(frame)
 
     # --fit：硬塞進一頁。依序犧牲 sparkline -> 每張卡的明細 -> 佇列改多欄 -> 裁 job。
@@ -2107,7 +2111,7 @@ def render(nodes, opt=None, sampled=None, **kw):
                                sp, compact, jcols, slurm_data=slurm_data,
                                want_qr=want_qr and not compact, ages=ages,
                                me=me, head_snaps=head_snaps, dense=dense,
-                               slurm_age=slurm_age)
+                               slurm_age=slurm_age, slurm_ok=slurm_ok)
         if len(frame) <= lines and not hidden:
             break
     return "\n".join(frame[:lines])
@@ -2182,7 +2186,8 @@ def model(sm, opt=None):
         jobs.append(j)
     return {
         "version": __version__, "time": sm["time"], "cluster": _title, "summary": summary,
-        "nodes": out_nodes, "queue": jobs, "queue_stale_s": _r(sm["slurm_age"], 0),
+        "nodes": out_nodes, "slurm": sm.get("slurm_ok", True), "queue": jobs,
+        "queue_stale_s": _r(sm["slurm_age"], 0),
         "alerts": [{"level": "red" if c == RED else "warn", "text": t}
                    for c, t in alerts(nodes, snaps, ages)],
         "history": [_r(x) for x in list(hist(("all", "gpu")))[-JSON_HISTORY:]],
@@ -2292,7 +2297,7 @@ def dense_panel(nodes, snaps, ages, width):
 
 def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
            job_cols=1, slurm_data=("", ""), want_qr=False, scope_h=6, ages=None,
-           me=None, head_snaps=None, dense=False, slurm_age=None):
+           me=None, head_snaps=None, dense=False, slurm_age=None, slurm_ok=True):
     # 版面填滿整個終端機：先決定一排放幾個面板，再把寬度平均分掉，
     # 而不是用固定寬度、右邊留一大塊空白。
     total_w, percol, panel_w = _layout(cols, len(nodes), force_stack or dense)
@@ -2326,12 +2331,14 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
     budget = lines - len(out) - 8
     show_qr_panel = want_qr and not _ascii and cols >= total_w and total_w - QR_W >= 72
     qw = QR_W + 2 if show_qr_panel else 0
-    if show_qr_panel:
+    if not slurm_ok:                           # 沒有 Slurm：整個佇列區塊不畫
+        sec, hidden = [], 0
+    elif show_qr_panel:
         # QR 區塊固定 20 行高，佇列比它矮的話排多欄一行都省不到，
         # 只會把欄位截斷。這種情況一律用單欄，看得清楚。
         one, hidden_one = slurm_section(total_w - qw, max_rows=max(1, budget),
                                         job_cols=1, data=slurm_data, user=me,
-                                    age=slurm_age)
+                                        age=slurm_age)
         # QR 旁邊剩下的寬度不夠每欄放下完整的窄版 job 列時，也維持單欄
         too_narrow = (total_w - qw - 2) // job_cols < JOB_FIXED_NARROW + 4
         if len(one) <= len(qr_panel(0)) or job_cols == 1 or too_narrow:
@@ -2339,7 +2346,7 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
         else:
             sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
                                         job_cols=job_cols, data=slurm_data, user=me,
-                                    age=slurm_age)
+                                        age=slurm_age)
     else:
         sec, hidden = slurm_section(total_w - qw, max_rows=max(1, budget),
                                     job_cols=job_cols, data=slurm_data, user=me,
@@ -2347,7 +2354,7 @@ def _frame(nodes, snaps, cols, lines, show_proc, force_stack, sparks, compact,
     if show_qr_panel:
         qr = qr_panel(len(sec))
         # QR 比佇列高的話，把佇列的框往下拉齊，不要在左邊留一塊空洞
-        if len(qr) > len(sec):
+        if len(qr) > len(sec) and sec:
             filler = V + " " * (total_w - qw - 2) + V
             sec = sec[:-1] + [filler] * (len(qr) - len(sec)) + [sec[-1]]
         for i in range(max(len(sec), len(qr))):
@@ -2371,7 +2378,7 @@ def cluster_name():
             v = line.split("=", 1)[1].strip()
             if v and v != "(null)":
                 return v
-    return "cluster"
+    return local_host() or "cluster"         # 沒有 Slurm（工作站、筆電）就用這台的主機名稱
 
 
 # --- 網頁儀表板（--web）與 Prometheus（/metrics） ----------------------------------
@@ -2519,6 +2526,7 @@ function render(d) {
   $("#alerts").replaceChildren(...d.alerts.map((a) => el("div", {class: "alert " + a.level}, "⚠ " + a.text)));
   $("#history").replaceChildren(spark(d.history, 600, 90, true));
   $("#nodes").replaceChildren(...d.nodes.map((n) => nodeCard(n, t)));
+  $("#queue").parentElement.hidden = d.slurm === false;     // 沒有 Slurm 的機器不顯示佇列
   $("#queue").replaceChildren(queueTable(d.queue, t, d.queue_stale_s));
 }
 

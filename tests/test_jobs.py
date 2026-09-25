@@ -267,11 +267,12 @@ class ReviewFixes(unittest.TestCase):
         self.assertIn("Slurm queue stale 0s", out)        # 並標明是舊的（假時鐘沒走，所以 0s）
 
     def test_no_slurm_at_all(self):
+        """沒裝 Slurm（假資料裡沒有 squeue.txt）：查詢失敗，而不是「有 Slurm 但沒有 job」。"""
         m = load()
         with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": os.path.join(FIXTURES, "nogpu")}):
-            open_fail = os.path.join(FIXTURES, "nogpu", "squeue.fail")
-            self.assertFalse(os.path.exists(open_fail))
-            self.assertEqual(m.slurm_query(), ("", "", ""))
+            self.assertIsNone(m.slurm_query())
+        with mock.patch.dict(os.environ, {"SLURMTOP_FIXTURES": os.path.join(FIXTURES, "idle2x8")}):
+            self.assertEqual(m.slurm_query()[0], "")          # 有 Slurm、佇列是空的
 
 
 if __name__ == "__main__":

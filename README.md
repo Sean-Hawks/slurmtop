@@ -136,7 +136,7 @@ Everything else is optional and degrades cleanly:
 | Missing | What happens |
 |---|---|
 | `nvidia-smi` / no GPU | node panels show CPU and RAM only, and the header switches its main gauge to CPU |
-| Slurm | pass `--nodes` or `--ssh-config`; the queue panel just says there are no jobs |
+| Slurm | pass `--nodes` or `--ssh-config`; the queue panel is left out and the title is the host name |
 | a second machine | `slurmtop --nodes localhost` watches the box you are on, no SSH involved |
 
 ### Where it runs

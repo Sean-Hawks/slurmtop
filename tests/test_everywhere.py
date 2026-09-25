@@ -689,5 +689,26 @@ class Docs(unittest.TestCase):
                 self.assertIn("Sean-Hawks/slurmtop/main/slurmtop", f.read(), name)
 
 
+class WithoutSlurm(unittest.TestCase):
+    """工作站、筆電：沒有 Slurm 就不要擺一個空的佇列，標題用主機名稱。"""
+
+    def test_terminal(self):
+        out = run("applesilicon", "--no-color", "--nodes", "m3").stdout
+        self.assertNotIn("Slurm queue", out)
+        self.assertIn("SLURMTOP // m3", out)
+        # 有 Slurm 但沒有 job 的叢集照舊顯示 "(no jobs)"
+        self.assertIn("(no jobs)", run("idle2x8", "--no-color").stdout)
+
+    def test_json_and_web_flag(self):
+        self.assertFalse(as_json("nogpu", "--nodes", "mac,cpu1")["slurm"])
+        self.assertTrue(as_json("idle2x8")["slurm"])
+        self.assertIn("d.slurm === false", load().WEB_JS)
+
+    def test_qr_panel_without_slurm(self):
+        p = run("nogpu", "--no-color", "--qr-panel", "--nodes", "mac,cpu1", cols=150)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("SCAN", p.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
