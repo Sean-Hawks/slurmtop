@@ -1,102 +1,94 @@
 # slurmtop
 
-**See every GPU in your lab — in the terminal, in the browser, or in a report —
-with one file and nothing to install on the nodes.**
+**實驗室裡每一張 GPU 的狀況，一個檔案就看得到——終端機、瀏覽器、效能報告都行，節點上什麼都不用裝。**
 
-[繁體中文說明](README.zh-TW.md) · [User manual](docs/MANUAL.md) · [使用手冊](docs/MANUAL.zh-TW.md)
+[English](README.md) · [使用手冊](docs/MANUAL.zh-TW.md) · [User manual](docs/MANUAL.md)
 
-`slurmtop` is a single Python script (standard library only, Python 3.8+) that
-shows CPU, memory, disk, network and per-GPU utilisation for every node, who
-holds each GPU, and the Slurm queue. It reads other machines over plain SSH, so
-there is no agent, no database and no daemon to set up.
+`slurmtop` 是一支 Python 腳本（只用標準函式庫、Python 3.8 以上），顯示每台節點的 CPU、記憶體、
+磁碟、網路和每一張 GPU 的使用率，告訴你每張卡是誰的 job 佔著，並列出 Slurm 佇列。其他機器用一般的
+SSH 讀，所以不需要裝 agent、資料庫或常駐程式。
 
-![slurmtop in the terminal](demo.gif)
+![終端機畫面](demo.gif)
 
-![slurmtop --web in the browser](docs/web-dashboard.png)
+![瀏覽器儀表板 slurmtop --web](docs/web-dashboard.png)
 
-*Top: the terminal view (recorded with `--flair`). Bottom: `slurmtop --web` in
-a browser. Both show simulated load on H200 nodes — same code path, synthetic
-telemetry — so the pictures are reproducible.*
+*上：終端機畫面（用 `--flair` 錄的）。下：`slurmtop --web` 在瀏覽器裡。兩張都是 H200 節點的模擬負載——
+程式走的是同一條路，只是資料是合成的，所以畫面可以重現。*
 
-## Why people use it
+## 為什麼好用
 
-- **One glance answers "who is using the GPUs, and are they actually busy?"**
-  Every GPU row ends with the job and user holding it, and GPUs that a job
-  holds but leaves idle are flagged — even when nothing is running on them.
-- **Works where you are.** A terminal over SSH, a browser tab, Grafana, a JSON
-  pipe or a report you can mail: one refresh feeds all of them.
-- **Nothing to deploy.** Copy one file to the machine you sit at. Nodes need
-  only SSH and a POSIX `sh`; nothing is installed or left running on them.
-- **Honest about problems.** A node that hangs is shown as `stale 12s` while
-  the others keep updating; unreachable nodes, hot GPUs and full disks go into
-  one alert line at the top.
-- **Measures performance, not just watches it.** `--report` records a run and
-  gives average / p95 / peak utilisation, memory, temperature, power and
-  energy per GPU — wrap any command and get an HTML report with charts.
+- **一眼回答「GPU 被誰用、有沒有真的在跑」。** 每張卡那一行最後就是佔著它的 job 和使用者；
+  job 分到卡卻放著不用時會被標出來——就算卡上一個行程都沒有也抓得到。
+- **你在哪裡都能看。** SSH 進去的終端機、瀏覽器分頁、Grafana、JSON、可以寄出去的報告，
+  全部來自同一次取樣。
+- **什麼都不用部署。** 把一個檔案放到你操作的那台機器上就好；節點只需要 SSH 和 POSIX `sh`，
+  不會在上面裝東西或留下常駐程式。
+- **出問題會老實說。** 卡住的節點標成「12 秒前的資料」，其他節點照常更新；連不上的節點、
+  過熱的卡、快滿的磁碟都集中在頂端一行警示。
+- **不只監看，還能評估效能。** `--report` 錄下一段時間或一個程式的完整執行，給你每張卡的
+  平均／p95／峰值使用率、記憶體、溫度、功耗和耗電，還能輸出帶圖表的 HTML 報告。
 
-## Quick start
+## 快速開始
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Sean-Hawks/slurmtop/main/install.sh | bash
 
-slurmtop                     # a Slurm cluster: nodes are found automatically
-slurmtop --nodes localhost   # just this machine (laptop, workstation)
-slurmtop --ssh-config        # every host in ~/.ssh/config
-slurmtop --web               # the same in your browser at http://127.0.0.1:8765
+slurmtop                     # Slurm 叢集：節點自動找
+slurmtop --nodes localhost   # 只看這台（筆電、工作站）
+slurmtop --ssh-config        # ~/.ssh/config 裡的每一台
+slurmtop --web               # 同樣的內容用瀏覽器看：http://127.0.0.1:8765
+slurmtop --lang zh           # 繁體中文介面（系統語言是中文時會自動切換）
 ```
 
-Windows (PowerShell): `irm https://raw.githubusercontent.com/Sean-Hawks/slurmtop/main/install.ps1 | iex`,
-then `slurmtop --nodes localhost` or `slurmtop --web`.
+Windows（PowerShell）：`irm https://raw.githubusercontent.com/Sean-Hawks/slurmtop/main/install.ps1 | iex`，
+再執行 `slurmtop --nodes localhost` 或 `slurmtop --web`。
 
-## Four ways to look at the same data
+## 同一份資料，四種看法
 
-| You want… | Run | You get |
+| 你想要… | 執行 | 得到 |
 |---|---|---|
-| a live view in the terminal | `slurmtop` | node panels, per-GPU bars and history, owners, alerts, the queue |
-| a live view in a browser, on a phone, on a wall screen | `slurmtop --web` | a self-contained dashboard (no CDN, works offline) |
-| graphs in Grafana, alerts in Prometheus | `slurmtop --web`, scrape `/metrics` | node and per-GPU metrics, owner info, jobs by state |
-| to evaluate a training run or a benchmark | `slurmtop --report -- python train.py` | a summary table, plus `--html` charts and `--log` CSV |
-| data for your own scripts | `slurmtop --json` | one sample as JSON, raw units |
+| 終端機即時畫面 | `slurmtop` | 節點面板、每張卡的長條和歷史、誰佔著、警示、佇列 |
+| 用瀏覽器、手機、大螢幕看 | `slurmtop --web` | 自給自足的儀表板（不連 CDN，叢集不能上網也能用） |
+| 在 Grafana 畫圖、用 Prometheus 發警報 | `slurmtop --web`，抓 `/metrics` | 節點與每張卡的指標、擁有者、各狀態的 job 數 |
+| 評估一次訓練或 benchmark | `slurmtop --report -- python train.py` | 摘要表格，加上 `--html` 圖表和 `--log` CSV |
+| 給自己的腳本用 | `slurmtop --json` | 一次取樣的 JSON，原始單位 |
 
-![a --report HTML page](docs/report.png)
+![--report 產生的 HTML 報告](docs/report.png)
 
-## Runs on
+## 支援的機器
 
-| Machine | CPU · memory · disk · network | GPUs | Tested on |
+| 機器 | CPU・記憶體・磁碟・網路 | GPU | 實測過的環境 |
 |---|---|---|---|
-| Linux | ✓ | NVIDIA (`nvidia-smi`), AMD (amdgpu sysfs, no ROCm tools needed), NVIDIA Jetson | NVIDIA: the H200 Slurm cluster it was first built for (earlier version); AMD, Jetson and the newest features: recorded output |
-| macOS | ✓ | Apple Silicon and Intel-Mac GPUs via `ioreg` (no sudo) | a real M3 MacBook |
-| Windows 10/11 | ✓ | NVIDIA (`nvidia-smi.exe`) | a real Windows 11 PC with an RTX 4070 Ti SUPER |
-| FreeBSD | ✓ | NVIDIA if `nvidia-smi` is installed | recorded output |
-| any node with SSH | read over SSH with a POSIX `sh` script | as above | bash, dash, ksh, sh; zsh, csh, tcsh logins |
+| Linux | ✓ | NVIDIA（`nvidia-smi`）、AMD（amdgpu sysfs，不用裝 ROCm 工具）、NVIDIA Jetson | NVIDIA：最早就是為一台 H200 Slurm 叢集寫的（較早的版本）；AMD、Jetson 和最新功能：錄下來的輸出 |
+| macOS | ✓ | Apple Silicon 與 Intel Mac 的 GPU（`ioreg`，不用 sudo） | 真的 M3 MacBook |
+| Windows 10／11 | ✓ | NVIDIA（`nvidia-smi.exe`） | 真的 Windows 11 電腦＋RTX 4070 Ti SUPER |
+| FreeBSD | ✓ | 有裝 `nvidia-smi` 就讀 NVIDIA | 錄下來的輸出 |
+| 任何能 SSH 的節點 | 用一段 POSIX `sh` 腳本透過 SSH 讀 | 同上 | bash、dash、ksh、sh；zsh、csh、tcsh 登入都能跑 |
 
-The machine you run it from needs Python 3.8+. With Slurm, jobs and the queue
-are shown; without it, everything else still works. Terminals without Unicode
-get a plain ASCII screen automatically.
+你操作的那台需要 Python 3.8 以上。有 Slurm 就顯示 job 和佇列，沒有 Slurm 其他功能照樣能用。
+終端機顯示不了 Unicode 時會自動改成純 ASCII 畫面。
 
-## Everyday recipes
+## 常用招式
 
 ```bash
-slurmtop --me                          # only my jobs and the GPUs they hold
-slurmtop --dense                       # one line per node for big fleets (automatic when needed)
-slurmtop --once                        # print one frame, e.g. to paste into chat
-slurmtop --report 600 --html run.html  # record ten minutes, keep an HTML report
-slurmtop --log usage.csv               # keep every sample as CSV while watching
-slurmtop --lang zh                     # 繁體中文介面
+slurmtop --me                          # 只看我的 job 和我佔用的卡
+slurmtop --dense                       # 機器很多時一台一行（放不下時會自動切換）
+slurmtop --once                        # 印一個畫面就結束，方便貼到聊天室
+slurmtop --report 600 --html run.html  # 錄十分鐘，留一份 HTML 報告
+slurmtop --log usage.csv               # 看的同時把每次取樣存成 CSV
 ```
 
-In a batch script, wrap the step you want to evaluate:
+在批次 job 裡，包住你想評估的那一步：
 
 ```bash
 slurmtop --nodes "$(hostname -s)" --report --html "report-$SLURM_JOB_ID.html" -- srun python train.py
 ```
 
-Everything is explained in the [user manual](docs/MANUAL.md): every option,
-how to read each part of the screen, the browser dashboard behind an SSH
-tunnel or a reverse proxy, Prometheus and Grafana, reports, troubleshooting.
+所有細節都在[使用手冊](docs/MANUAL.zh-TW.md)：每個參數、畫面上每個部分怎麼看、用 SSH 通道或反向代理開放
+網頁儀表板、Prometheus 和 Grafana、效能報告、疑難排解。
 
 <details>
-<summary>What the terminal view looks like, as text</summary>
+<summary>終端機畫面的純文字版</summary>
 
 ```
 ◤ SLURMTOP // lab-h200 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────── 12:43:04 ◥
@@ -154,34 +146,27 @@ tunnel or a reverse proxy, Prometheus and Grafana, reports, troubleshooting.
 
 </details>
 
-## How it compares
+## 跟其他工具比
 
-- **`nvtop` / `nvitop`** show one machine in great detail. slurmtop shows many
-  machines at once, knows about Slurm jobs, and adds the browser, Prometheus
-  and report outputs.
-- **DCGM exporter + Prometheus + Grafana** is the right tool for a large
-  permanent installation. slurmtop is what you run *today*, on a handful of
-  nodes, without installing anything — and it can feed that Grafana later.
-- **`squeue`** tells you what is queued; slurmtop also tells you whether the
-  GPUs a job was given are actually doing anything.
+- **`nvtop`／`nvitop`** 把一台機器看得很細。slurmtop 同時看很多台、認得 Slurm 的 job，
+  還多了瀏覽器、Prometheus 和報告。
+- **DCGM exporter＋Prometheus＋Grafana** 適合大型、長期的正式架設。slurmtop 是你**今天**就能在幾台
+  節點上跑起來、什麼都不用裝的工具——之後也可以餵給那套 Grafana。
+- **`squeue`** 告訴你排了什麼；slurmtop 還告訴你分出去的 GPU 到底有沒有在做事。
 
-## Safety
+## 安全
 
-- It only reads: `nvidia-smi`, `/proc`, `/sys`, `df`, `netstat`, `squeue`,
-  `sinfo`, `scontrol`. Nothing is written on the nodes.
-- Job and user names come from other people. They are stripped of terminal
-  control characters, and the web page only ever inserts them as text.
-- `--web` listens on `127.0.0.1` and has no login. Reach it through an SSH
-  tunnel, or put it behind a proxy that authenticates — see the manual.
+- 只讀不寫：`nvidia-smi`、`/proc`、`/sys`、`df`、`netstat`、`squeue`、`sinfo`、`scontrol`，節點上什麼都不寫。
+- job 名稱和使用者名稱是別人取的：會先去掉終端機控制字元，網頁上也一律當純文字顯示。
+- `--web` 預設只聽 `127.0.0.1`、沒有登入機制。請用 SSH 通道連過來，或放在會驗證身分的反向代理後面——見使用手冊。
 
-## Credits
+## 作者
 
-Built by **team-03 / Hawks** during [HiPAC 2026](https://www.nchc.org.tw/) at
-NCHC, because `watch nvidia-smi` in a separate tmux pane per node got old fast.
-Issues and pull requests welcome.
+由 **team-03 / Hawks** 在國網中心 [HiPAC 2026](https://www.nchc.org.tw/) 期間開發——
+因為每台節點開一個 tmux 視窗跑 `watch nvidia-smi` 實在太累了。歡迎開 issue 和 pull request。
 
-<img src="qr.png" width="140" alt="QR code for this repository">
+<img src="qr.png" width="140" alt="本專案的 QR code">
 
-## License
+## 授權
 
 MIT

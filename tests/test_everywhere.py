@@ -671,16 +671,44 @@ class Report(unittest.TestCase):
 
 
 class Docs(unittest.TestCase):
+    DOCS = ("README.md", "README.zh-TW.md", "docs/MANUAL.md", "docs/MANUAL.zh-TW.md")
+
     def test_readme_flags_exist(self):
-        """README 提到的每個 --參數 都要真的存在，文件和程式不能對不起來。"""
+        """文件提到的每個 --參數 都要真的存在，文件和程式不能對不起來。"""
         from tests.helpers import ROOT, SCRIPT
-        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-            readme = f.read()
         with open(SCRIPT, encoding="utf-8") as f:
             src = f.read()
         known = set(re.findall(r'add_argument\((?:"-\w", )?"(--[a-z-]+)"', src))
-        used = set(re.findall(r"(?<![\w-])(--[a-z][a-z-]+)", readme))
-        self.assertEqual(sorted(used - known - {"--help"}), [])
+        for doc in self.DOCS:
+            with open(os.path.join(ROOT, doc), encoding="utf-8") as f:
+                text = f.read()
+            # 程式碼區塊裡別的工具（ssh、nginx、systemctl…）的參數不算
+            ours = [ln for ln in text.splitlines() if "slurmtop" in ln or ln.startswith("|")
+                    or ln.lstrip().startswith("-")]
+            used = set(re.findall(r"(?<![\w-])(--[a-z][a-z-]+)", "\n".join(ours)))
+            with self.subTest(doc):
+                self.assertEqual(sorted(used - known - {"--help", "--epochs", "--gres", "--user", "--now"}), [])
+
+    def test_links_and_images_exist(self):
+        from tests.helpers import ROOT
+        for doc in self.DOCS:
+            with open(os.path.join(ROOT, doc), encoding="utf-8") as f:
+                text = f.read()
+            base = os.path.dirname(os.path.join(ROOT, doc))
+            targets = re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", text) + re.findall(r'src="([^"]+)"', text)
+            for t in targets:
+                if t.startswith("http"):
+                    continue
+                with self.subTest(doc=doc, target=t):
+                    self.assertTrue(os.path.exists(os.path.join(base, t)), t)
+
+    def test_both_languages_cover_the_same_sections(self):
+        from tests.helpers import ROOT
+        count = {}
+        for doc in ("docs/MANUAL.md", "docs/MANUAL.zh-TW.md"):
+            with open(os.path.join(ROOT, doc), encoding="utf-8") as f:
+                count[doc] = len(re.findall(r"^## \d+\.", f.read(), re.M))
+        self.assertEqual(count["docs/MANUAL.md"], count["docs/MANUAL.zh-TW.md"])
 
     def test_installers_point_at_the_script(self):
         from tests.helpers import ROOT

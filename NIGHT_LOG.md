@@ -257,7 +257,7 @@ rc=0，畫面正常（NODE localhost、DSK 52.1%）
 | NVIDIA Jetson | sysfs 的 GPU load、thermal zone | 用假的 Orin 目錄樹跑 shell 段 |
 | FreeBSD | `kern.cp_time`、`vm.stats`、依標題列找 netstat 欄位 | 錄下來的輸出＋假的 sysctl |
 | 沒有 bash 的機器 | REMOTE 改用 `sh -c '有 bash 用 bash，不然用 sh'` | **在 dash、ksh、sh 下實跑整份腳本**；經由 csh、tcsh、zsh 登入 shell 也實跑過 |
-| Windows（本機） | ctypes 讀 CPU／記憶體、`netstat -e`、`nvidia-smi.exe`；主控台開 VT 模式；`install.ps1` | 只有 mock，**需在 Windows 實測** |
+| Windows（本機） | ctypes 讀 CPU／記憶體、`netstat -e`、`nvidia-smi.exe`；主控台開 VT 模式；`install.ps1` | **真機實測過**（見下面〈Windows 真機實測〉） |
 | 終端機不支援 Unicode | 自動整個畫面改 ASCII，不再因為 UnicodeEncodeError 掛掉 | 用 ascii／cp1252／cp950 等編碼實跑 |
 
 **安全與穩健**
@@ -283,15 +283,30 @@ squeue 一時太慢被誤判成「沒有 Slurm」、10 張以上 AMD 卡編號�
 commit**都各自跑過一次完整測試：除了 `e664113` 以外全部通過（第一輪前幾個 commit 帶著當時刻意標記的
 expected failure，是預期中的）。
 
+## Windows 真機實測
+
+透過 Tailscale 連進 `hawks-pc` 上的 WSL2，再經由 WSL 的 interop 呼叫 Windows 本身的程式，所以跑的是真正的
+Windows 程式碼路徑，不是 WSL 的 Linux。環境：Windows 11（build 26200）、繁體中文系統（主控台編碼 cp950）、
+Windows 版 Python 3.13、NVIDIA GeForce RTX 4070 Ti SUPER。檔案只放在 `%LOCALAPPDATA%\Temp\slurmtop-test`，
+測完已刪除，沒有改任何系統設定。
+
+| 測試 | 結果 |
+|---|---|
+| `py slurmtop.py --once --nodes localhost`（輸出導向管線，cp950） | 正常；畫不出方塊字，自動整個畫面改 ASCII；標題用主機名稱 `Hawks-PC` |
+| GPU（`nvidia-smi.exe`） | 使用率、VRAM、溫度、功耗都正確 |
+| 記憶體（`GlobalMemoryStatusEx`） | 25／31 GiB，合理 |
+| 磁碟（`shutil.disk_usage`） | 98.7%，跟 PowerShell `Get-PSDrive C` 一致（**C 槽真的快滿了**，紅色警示是對的） |
+| CPU（`GetSystemTimes` 兩次取樣相減） | `--report` 期間 5～8%，合理 |
+| 網速（中文版 `netstat -e`，標題是「位元組」） | 從第二次取樣起每秒都有收／送速度，依位置解析在翻譯過的輸出上可行 |
+| `--report --log --html` | 報告、CSV、HTML 都正常 |
+| `--web`（PowerShell 起伺服器、`Invoke-WebRequest` 打端點） | `/`、`/app.js`、`/api/state`、`/metrics` 都是 200；偽造的 Host 回 403 |
+| `install.ps1`（來源換成本機檔案、目的地換成暫存資料夾） | 下載、驗證、產生 `slurmtop.cmd` 都正常，透過 `slurmtop.cmd --version` 執行成功；沒有改 PATH，只印出指示 |
+
+還沒在 Windows 上看過的：真正的主控台視窗裡的彩色 live 畫面（這次都是導向管線），以及沒有 NVIDIA 卡的 Windows。
+
 ## 需在其他機器上實測
 
 ```bash
-# Windows（PowerShell）
-irm https://raw.githubusercontent.com/Sean-Hawks/slurmtop/main/install.ps1 | iex   # 或 py slurmtop
-py slurmtop --once --nodes localhost
-py slurmtop --once --nodes localhost > out.txt      # 導向檔案時要自動改 ASCII，不能掛掉
-py slurmtop --web                                    # 瀏覽器開 http://127.0.0.1:8765
-
 # AMD 節點：sysfs 的數字要和 rocm-smi 一致，編號要和 Slurm 的 IDX 一致
 cat /sys/class/drm/card*/device/gpu_busy_percent
 rocm-smi --showuse --showmemuse --showtemp --showpower
@@ -326,7 +341,7 @@ slurmtop --nodes "$(hostname -s)" --report --html report-$SLURM_JOB_ID.html -- p
 
 ## 建議下一步
 
-1. 照上面的指令在 Windows、AMD、Jetson 上各跑一次。
+1. 照上面的指令在 AMD、Jetson、FreeBSD 上各跑一次；Windows 可以在 Windows Terminal 裡直接開 live 畫面看一次顏色。
 2. 決定 `--web` 要不要加簡單的 token 驗證（目前靠 ssh tunnel）。
 3. Windows 非 NVIDIA 顯卡、Intel GPU。
 4. 重錄 demo（終端機和網頁各一段），升版到 1.1.0／1.2.0。
