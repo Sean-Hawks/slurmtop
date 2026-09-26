@@ -2477,8 +2477,8 @@ main { padding:12px 16px; display:grid; grid-template-columns:minmax(0,1fr); gap
 .row .lab { color:var(--dim); } .row .num { text-align:right; }
 .bar { height:10px; background:var(--line); border-radius:5px; overflow:hidden; }
 .bar > i { display:block; height:100%; border-radius:5px; }
-.gpu { display:grid; grid-template-columns:28px 90px 42px 56px 96px minmax(0,1fr);
-  gap:8px; align-items:center; padding:3px 0; border-top:1px dashed var(--line); }
+.gpu { display:grid; grid-template-columns:26px 72px 40px 50px 92px minmax(0,1fr);
+  gap:7px; align-items:center; padding:3px 0; border-top:1px dashed var(--line); }
 .gpu > span { white-space:nowrap; } .gpu > div { min-width:0; }
 .gpu .own { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .badge { color:#000; background:var(--warn); border-radius:4px; padding:0 4px; font-weight:700; margin-right:4px; }
@@ -3188,7 +3188,8 @@ def run_report(nodes, opt):
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
-        description="One-screen dashboard for small GPU clusters (Slurm + nvidia-smi).",
+        description="GPU and node dashboard for clusters and single machines - in the terminal, "
+                    "in the browser (--web), for Prometheus, as JSON, or as a recorded report.",
         epilog="credited by team-03/Hawks · https://github.com/Sean-Hawks/slurmtop")
     ap.add_argument("-n", "--interval", type=float, default=2.0,
                     help="refresh interval in seconds (default: 2)")
