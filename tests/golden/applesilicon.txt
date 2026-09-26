@@ -26,4 +26,4 @@
 │ DSK ▕███████░░░░░░░▏  52.1%   465G/926G   NET -                                                           │
 │ G0 ▕███░░░░░░░░░▏  26%    0.8G   -     - Apple M3 10-core                                                 │
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval          team-03/Hawks · v1.0.0
+  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval          team-03/Hawks · v1.1.0

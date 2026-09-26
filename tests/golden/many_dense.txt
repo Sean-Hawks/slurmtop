@@ -50,4 +50,4 @@
 │  gpu15      mixed    CPU ▕█████░░░░░▏ 112/224 idle 112   RAM free 725 GiB                                                                         │
 │  gpu16      mixed    CPU ▕█████░░░░░▏ 112/224 idle 112   RAM free 725 GiB                                                                         │
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                                                  team-03/Hawks · v1.0.0
+  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                                                  team-03/Hawks · v1.1.0

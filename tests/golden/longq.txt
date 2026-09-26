@@ -59,4 +59,4 @@
 │  n1         mixed    CPU ▕██░░░░░░░░▏ 48/224 idle 176   RAM free 725 GiB                                                                         │
 │  n2         mixed    CPU ▕██░░░░░░░░▏ 48/224 idle 176   RAM free 725 GiB                                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                                                 team-03/Hawks · v1.0.0
+  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                                                 team-03/Hawks · v1.1.0

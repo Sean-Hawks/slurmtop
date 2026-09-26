@@ -141,7 +141,7 @@ slurmtop --nodes "$(hostname -s)" --report --html "report-$SLURM_JOB_ID.html" --
 │  gpu03      mixed    CPU ▕███████░░░▏ 160/224 idle 64   RAM free 725 GiB                                                                        │
 │  gpu04      mixed    CPU ▕███████░░░▏ 160/224 idle 64   RAM free 725 GiB                                                                        │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                                                team-03/Hawks · v1.0.0
+  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                                                team-03/Hawks · v1.1.0
 ```
 
 </details>

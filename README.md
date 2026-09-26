@@ -149,7 +149,7 @@ tunnel or a reverse proxy, Prometheus and Grafana, reports, troubleshooting.
 │  gpu03      mixed    CPU ▕███████░░░▏ 160/224 idle 64   RAM free 725 GiB                                                                        │
 │  gpu04      mixed    CPU ▕███████░░░▏ 160/224 idle 64   RAM free 725 GiB                                                                        │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                                                team-03/Hawks · v1.0.0
+  Ctrl-C quit  ·  --proc processes  ·  --stack vertical  ·  -n <sec> interval                                                team-03/Hawks · v1.1.0
 ```
 
 </details>

@@ -22,7 +22,7 @@ credited by team-03/Hawks - HiPAC 2026, NCHC
 https://github.com/Sean-Hawks/slurmtop
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __credits__ = "team-03/Hawks"
 
 import argparse
